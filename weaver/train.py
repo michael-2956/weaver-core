@@ -708,6 +708,16 @@ def save_parquet(args, output_path, scores, labels, observers):
         _logger.error('Error when writing output parquet file: \n' + str(e))
 
 
+def cpu_or_mps_if_available():
+    dev = torch.device('cpu')
+    try:
+        if torch.backends.mps.is_available():
+            dev = torch.device('mps')
+    except AttributeError:
+        pass
+    return dev
+
+
 def _main(args):
     _logger.info('args:\n - %s', '\n - '.join(str(it) for it in args.__dict__.items()))
 
@@ -747,12 +757,9 @@ def _main(args):
             dev = torch.device(gpus[0])
     else:
         gpus = None
-        dev = torch.device('cpu')
-        try:
-            if torch.backends.mps.is_available():
-                dev = torch.device('mps')
-        except AttributeError:
-            pass
+        dev = cpu_or_mps_if_available()
+
+    _logger.info(f"Using device: {dev}")
 
     # load data
     if training_mode:
@@ -818,7 +825,7 @@ def _main(args):
 
         # training loop
         best_valid_metric = np.inf if args.regression_mode else 0
-        grad_scaler = torch.cuda.amp.GradScaler() if args.use_amp else None
+        grad_scaler = torch.amp.GradScaler('cuda') if args.use_amp else None
         for epoch in range(args.num_epochs):
             if args.load_epoch is not None:
                 if epoch <= args.load_epoch:
@@ -867,12 +874,7 @@ def _main(args):
                 dev = torch.device(gpus[0])
             else:
                 gpus = None
-                dev = torch.device('cpu')
-                try:
-                    if torch.backends.mps.is_available():
-                        dev = torch.device('mps')
-                except AttributeError:
-                    pass
+                dev = cpu_or_mps_if_available()
             model = orig_model.to(dev)
             model_path = args.model_prefix if args.model_prefix.endswith(
                 '.pt') else args.model_prefix + '_best_epoch_state.pt'

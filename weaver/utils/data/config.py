@@ -201,7 +201,12 @@ class DataConfig(object):
             _logger.debug('test_aux_branches:\n  %s', ', '.join(sorted(self.test_aux_branches)))
 
     def __getattr__(self, name):
-        return self.options[name]
+        # return self.options[name]
+        opts = object.__getattribute__(self, "options")
+        try:
+            return opts[name]
+        except KeyError:
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
     def register(self, name, expr=None, to='both'):
         assert to in ('train', 'test', 'both')

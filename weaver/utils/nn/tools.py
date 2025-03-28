@@ -47,6 +47,16 @@ def _flatten_preds(model_output, label=None, mask=None, label_axis=1):
 
     return preds, label, mask
 
+import os
+import psutil
+def ptst(n, nmb, t, process, nmb_dict):
+    new_nmb = process.memory_info().vms / 1024 / 1024
+    new_t = time.time()
+    if n not in nmb_dict:
+        nmb_dict[n] = 0
+    nmb_dict[n] += new_nmb - nmb
+    print(f"{n:2} {new_t - t:10.4f} {new_nmb - nmb:10.4f} {nmb_dict[n]:16.4f} {sum(nmb_dict.values()):16.4f}")
+    return new_nmb, new_t
 
 def train_classification(
         model, loss_func, opt, scheduler, train_loader, dev, epoch, steps_per_epoch=None, grad_scaler=None,
@@ -62,33 +72,60 @@ def train_classification(
     entry_count = 0
     count = 0
     start_time = time.time()
+    
+    # process = psutil.Process(os.getpid())
+    # t = time.time()
+    # nmb = process.memory_info().vms / 1024 / 1024
+    # nmb_dict = {}
+
     with tqdm.tqdm(train_loader) as tq:
         for X, y, _ in tq:
+            # print()
+            # nmb, t = ptst(1, nmb, t, process, nmb_dict)
             inputs = [X[k].to(dev) for k in data_config.input_names]
+            # nmb, t = ptst(2, nmb, t, process, nmb_dict)
             label = y[data_config.label_names[0]].long().to(dev)
+            # nmb, t = ptst(3, nmb, t, process, nmb_dict)
             entry_count += label.shape[0]
+            # nmb, t = ptst(4, nmb, t, process, nmb_dict)
             try:
+                # nmb, t = ptst(5, nmb, t, process, nmb_dict)
                 mask = y[data_config.label_names[0] + '_mask'].bool().to(dev)
+                # nmb, t = ptst(6, nmb, t, process, nmb_dict)
             except KeyError:
+                # nmb, t = ptst(7, nmb, t, process, nmb_dict)
                 mask = None
+            # nmb, t = ptst(8, nmb, t, process, nmb_dict)
             opt.zero_grad()
-            with torch.cuda.amp.autocast(enabled=grad_scaler is not None):
+            # nmb, t = ptst(9, nmb, t, process, nmb_dict)
+            with torch.amp.autocast('cuda', enabled=grad_scaler is not None):
                 model_output = model(*inputs)
+                # nmb, t = ptst(10, nmb, t, process, nmb_dict)
                 logits, label, _ = _flatten_preds(model_output, label=label, mask=mask)
+                # nmb, t = ptst(11, nmb, t, process, nmb_dict)
                 loss = loss_func(logits, label)
+                # nmb, t = ptst(12, nmb, t, process, nmb_dict)
             if grad_scaler is None:
                 loss.backward()
+                # nmb, t = ptst(13, nmb, t, process, nmb_dict)
                 opt.step()
+                # nmb, t = ptst(14, nmb, t, process, nmb_dict)
             else:
                 grad_scaler.scale(loss).backward()
+                # nmb, t = ptst(15, nmb, t, process, nmb_dict)
                 grad_scaler.step(opt)
+                # nmb, t = ptst(16, nmb, t, process, nmb_dict)
                 grad_scaler.update()
+                # nmb, t = ptst(17, nmb, t, process, nmb_dict)
 
             if scheduler and getattr(scheduler, '_update_per_step', False):
                 scheduler.step()
+                # nmb, t = ptst(18, nmb, t, process, nmb_dict)
 
             _, preds = logits.max(1)
+            # nmb, t = ptst(19, nmb, t, process, nmb_dict)
             loss = loss.item()
+            # nmb, t = ptst(20, nmb, t, process, nmb_dict)
 
             num_examples = label.shape[0]
             label_counter.update(label.numpy(force=True))
@@ -98,12 +135,16 @@ def train_classification(
             total_loss += loss
             total_correct += correct
 
+            # nmb, t = ptst(21, nmb, t, process, nmb_dict)
+
             tq.set_postfix({
                 'lr': '%.2e' % scheduler.get_last_lr()[0] if scheduler else opt.defaults['lr'],
                 'Loss': '%.5f' % loss,
                 'AvgLoss': '%.5f' % (total_loss / num_batches),
                 'Acc': '%.5f' % (correct / num_examples),
                 'AvgAcc': '%.5f' % (total_correct / count)})
+            
+            # nmb, t = ptst(22, nmb, t, process, nmb_dict)
 
             if tb_helper:
                 tb_helper.write_scalars([
@@ -114,6 +155,11 @@ def train_classification(
                     with torch.no_grad():
                         tb_helper.custom_fn(model_output=model_output, model=model,
                                             epoch=epoch, i_batch=num_batches, mode='train')
+
+            # print()
+            # nmb, t = ptst(23, nmb, t, process, nmb_dict)
+            # torch.mps.empty_cache()
+            # nmb, t = ptst(24, nmb, t, process, nmb_dict)
 
             if steps_per_epoch is not None and num_batches >= steps_per_epoch:
                 break
@@ -317,7 +363,7 @@ def train_regression(
             num_examples = label.shape[0]
             label = label.to(dev)
             opt.zero_grad()
-            with torch.cuda.amp.autocast(enabled=grad_scaler is not None):
+            with torch.amp.autocast('cuda', enabled=grad_scaler is not None):
                 model_output = model(*inputs)
                 preds = model_output.squeeze()
                 loss = loss_func(preds, label)
