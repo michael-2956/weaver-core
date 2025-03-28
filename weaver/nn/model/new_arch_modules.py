@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 class EfficientAttention(nn.Module):
     """
@@ -88,12 +89,13 @@ class EfficientAttention(nn.Module):
                 attn_mask = attn_mask.view(B, self.num_heads, Lq, Lkv)  # (B, num_heads, Lq, Lkv)
                 attn_mask = attn_mask + addidive_key_padding_mask       # add across all heads and queries
 
-        attn_output = F.scaled_dot_product_attention(
-            q, k, v,
-            attn_mask=attn_mask,
-            # ensure dropout does not apply in eval mode
-            dropout_p=(self.attn_dropout if self.training else 0.0)
-        )  # shape: (B, num_heads, Lq, head_dim)
+        with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.CUDNN_ATTENTION, SDPBackend.MATH]):
+            attn_output = F.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=attn_mask,
+                # ensure dropout does not apply in eval mode
+                dropout_p=(self.attn_dropout if self.training else 0.0)
+            )  # shape: (B, num_heads, Lq, head_dim)
 
         # shape: (B, Lq, embed_dim)
         attn_output = attn_output.transpose(1, 2).reshape(B, Lq, self.embed_dim)
