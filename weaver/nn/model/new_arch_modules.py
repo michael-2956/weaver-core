@@ -89,7 +89,7 @@ class EfficientAttention(nn.Module):
                 attn_mask = attn_mask.view(B, self.num_heads, Lq, Lkv)  # (B, num_heads, Lq, Lkv)
                 attn_mask = attn_mask + addidive_key_padding_mask       # add across all heads and queries
 
-        with sdpa_kernel([SDPBackend.FLASH_ATTENTION]): # , SDPBackend.EFFICIENT_ATTENTION, SDPBackend.CUDNN_ATTENTION, SDPBackend.MATH
+        with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.CUDNN_ATTENTION, SDPBackend.MATH]):
             attn_output = F.scaled_dot_product_attention(
                 q, k, v,
                 attn_mask=attn_mask,
