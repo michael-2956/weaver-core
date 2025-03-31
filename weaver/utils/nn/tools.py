@@ -47,16 +47,6 @@ def _flatten_preds(model_output, label=None, mask=None, label_axis=1):
 
     return preds, label, mask
 
-import os
-import psutil
-def ptst(n, nmb, t, process, nmb_dict):
-    new_nmb = process.memory_info().vms / 1024 / 1024
-    new_t = time.time()
-    if n not in nmb_dict:
-        nmb_dict[n] = 0
-    nmb_dict[n] += new_nmb - nmb
-    print(f"{n:2} {new_t - t:10.4f} {new_nmb - nmb:10.4f} {nmb_dict[n]:16.4f} {sum(nmb_dict.values()):16.4f}")
-    return new_nmb, new_t
 
 def train_classification(
         model, loss_func, opt, scheduler, train_loader, dev, epoch, steps_per_epoch=None, grad_scaler=None,
@@ -72,12 +62,6 @@ def train_classification(
     entry_count = 0
     count = 0
     start_time = time.time()
-    
-    # process = psutil.Process(os.getpid())
-    # t = time.time()
-    # nmb = process.memory_info().vms / 1024 / 1024
-    # nmb_dict = {}
-    # nmb, t = ptst(1, nmb, t, process, nmb_dict)
 
     with tqdm.tqdm(train_loader) as tq:
         for X, y, _ in tq:
