@@ -102,7 +102,7 @@ def train_classification(
 
             probs = F.softmax(logits, dim=1)
             correct_probs = probs[torch.arange(label.size(0)), label]
-            high_conf_p = (correct_probs > 0.7424).float().mean().item()
+            high_conf_p = (correct_probs > 0.5).float().mean().item()
 
             tq.set_postfix({
                 'lr': '%.2e' % scheduler.get_last_lr()[0] if scheduler else opt.defaults['lr'],
@@ -110,7 +110,7 @@ def train_classification(
                 'AvgLoss': '%.5f' % (total_loss / num_batches),
                 'Acc': '%.5f' % (correct / num_examples),
                 'AvgAcc': '%.5f' % (total_correct / count),
-                'Conf>.7424': '%.5f' % high_conf_p
+                'Conf>.5': '%.5f' % high_conf_p
             })
 
 
