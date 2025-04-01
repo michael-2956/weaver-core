@@ -142,6 +142,8 @@ parser.add_argument('--backend', type=str, choices=['gloo', 'nccl', 'mpi'], defa
                     help='backend for distributed training')
 parser.add_argument('--cross-validation', type=str, default=None,
                     help='enable k-fold cross validation; input format: `variable_name%%k`')
+parser.add_argument('--no-mps', action='store_true', default=False,
+                    help='do not use mps even if available')
 
 
 def to_filelist(args, mode='train'):
@@ -708,13 +710,14 @@ def save_parquet(args, output_path, scores, labels, observers):
         _logger.error('Error when writing output parquet file: \n' + str(e))
 
 
-def cpu_or_mps_if_available():
+def cpu_or_mps_if_available(no_mps=False):
     dev = torch.device('cpu')
-    try:
-        if torch.backends.mps.is_available():
-            dev = torch.device('mps')
-    except AttributeError:
-        pass
+    if not no_mps:
+        try:
+            if torch.backends.mps.is_available():
+                dev = torch.device('mps')
+        except AttributeError:
+            pass
     return dev
 
 
@@ -757,7 +760,7 @@ def _main(args):
             dev = torch.device(gpus[0])
     else:
         gpus = None
-        dev = cpu_or_mps_if_available()
+        dev = cpu_or_mps_if_available(args.no_mps)
 
     _logger.info(f"Using device: {dev}")
 
@@ -874,7 +877,7 @@ def _main(args):
                 dev = torch.device(gpus[0])
             else:
                 gpus = None
-                dev = cpu_or_mps_if_available()
+                dev = cpu_or_mps_if_available(args.no_mps)
             model = orig_model.to(dev)
             model_path = args.model_prefix if args.model_prefix.endswith(
                 '.pt') else args.model_prefix + '_best_epoch_state.pt'
