@@ -3,6 +3,7 @@ import awkward as ak
 import tqdm
 import time
 import torch
+import torch.nn.functional as F
 
 from collections import defaultdict, Counter
 from .metrics import evaluate_metrics
@@ -99,14 +100,19 @@ def train_classification(
             total_loss += loss
             total_correct += correct
 
+            probs = F.softmax(logits, dim=1)
+            correct_probs = probs[torch.arange(label.size(0)), label]
+            high_conf_p = (correct_probs > 0.96).float().mean().item()
 
             tq.set_postfix({
                 'lr': '%.2e' % scheduler.get_last_lr()[0] if scheduler else opt.defaults['lr'],
                 'Loss': '%.5f' % loss,
                 'AvgLoss': '%.5f' % (total_loss / num_batches),
                 'Acc': '%.5f' % (correct / num_examples),
-                'AvgAcc': '%.5f' % (total_correct / count)})
-            
+                'AvgAcc': '%.5f' % (total_correct / count),
+                'HighConf': '%.5f' % high_conf_p
+            })
+
 
             if tb_helper:
                 tb_helper.write_scalars([
