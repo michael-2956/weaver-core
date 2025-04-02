@@ -81,7 +81,6 @@ def train_classification(
             with torch.autocast('xla' if dev == 'xla' else 'cuda', enabled=grad_scaler is not None):
                 model_output = model(*inputs)
                 logits, label, _ = _flatten_preds(model_output, label=label, mask=mask)
-                print(logits.shape, label.shape, loss_func)
                 loss = loss_func(logits, label)
             if grad_scaler is None:
                 loss.backward()
