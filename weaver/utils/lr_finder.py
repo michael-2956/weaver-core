@@ -292,7 +292,7 @@ class LRFinder(object):
 
         self.optimizer.step()
 
-        return total_loss.detach().cpu().item()
+        return total_loss.item()
 
     def _move_to_device(self, inputs, labels):
         def move(obj, device):
@@ -326,7 +326,7 @@ class LRFinder(object):
                 # Forward pass and loss computation
                 outputs = self.model(*inputs)
                 loss = self.criterion(outputs, labels)
-                running_loss += loss.detach().cpu().item() * batch_size
+                running_loss += loss.item() * batch_size
 
         return running_loss / len(dataloader.dataset)
 
