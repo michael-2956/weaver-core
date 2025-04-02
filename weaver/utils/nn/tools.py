@@ -356,7 +356,7 @@ def train_regression(
             if scheduler and getattr(scheduler, '_update_per_step', False):
                 scheduler.step()
 
-            loss = loss.item()
+            loss = loss.detach().cpu().item()
 
             num_batches += 1
             count += num_examples
