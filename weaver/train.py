@@ -569,6 +569,8 @@ def model_setup(args, data_config, device='cpu'):
         network_options['for_inference'] = True
     if args.use_amp:
         network_options['use_amp'] = True
+    if args.use_xla:
+        network_options['use_xla'] = True
     model, model_info = network_module.get_model(data_config, **network_options)
     if args.load_model_weights:
         model_state = torch.load(args.load_model_weights, map_location='cpu')
@@ -766,6 +768,7 @@ def _main(args):
     
     if args.use_xla:
         import torch_xla
+        from torch_xla.amp.grad_scaler import GradScaler as GradScalerXLA
         dev = 'xla'
 
     _logger.info(f"Using device: {dev}")
@@ -835,7 +838,7 @@ def _main(args):
         # training loop
         best_valid_metric = np.inf if args.regression_mode else 0
         grad_scaler = (
-            torch_xla.amp.GradScaler() if args.use_xla else torch.amp.GradScaler('cuda')
+            GradScalerXLA() if args.use_xla else torch.amp.GradScaler('cuda')
         ) if args.use_amp else None
         for epoch in range(args.num_epochs):
             if args.load_epoch is not None:

@@ -78,7 +78,7 @@ def train_classification(
             except KeyError:
                 mask = None
             opt.zero_grad()
-            with torch.amp.autocast('cuda', enabled=grad_scaler is not None):
+            with torch.autocast('xla' if dev == 'xla' else 'cuda', enabled=grad_scaler is not None):
                 model_output = model(*inputs)
                 logits, label, _ = _flatten_preds(model_output, label=label, mask=mask)
                 loss = loss_func(logits, label)
@@ -341,7 +341,7 @@ def train_regression(
             num_examples = label.shape[0]
             label = label.to(dev)
             opt.zero_grad()
-            with torch.amp.autocast('cuda', enabled=grad_scaler is not None):
+            with torch.autocast('xla' if dev == 'xla' else 'cuda', enabled=grad_scaler is not None):
                 model_output = model(*inputs)
                 preds = model_output.squeeze()
                 loss = loss_func(preds, label)

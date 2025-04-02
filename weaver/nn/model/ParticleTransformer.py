@@ -483,12 +483,14 @@ class ParticleTransformer(nn.Module):
                  trim=True,
                  for_inference=False,
                  use_amp=False,
+                 use_xla=False,
                  **kwargs) -> None:
         super().__init__(**kwargs)
 
         self.trimmer = SequenceTrimmer(enabled=trim and not for_inference)
         self.for_inference = for_inference
         self.use_amp = use_amp
+        self.use_xla = use_xla
 
         embed_dim = embed_dims[-1] if len(embed_dims) > 0 else input_dim
         default_cfg = dict(embed_dim=embed_dim, num_heads=num_heads, ffn_ratio=4,
@@ -549,7 +551,7 @@ class ParticleTransformer(nn.Module):
             x, v, mask, uu = self.trimmer(x, v, mask, uu)
             padding_mask = ~mask.squeeze(1)  # (N, P)
 
-        with torch.amp.autocast('cuda', enabled=self.use_amp):
+        with torch.autocast('xla' if self.use_xla else 'cuda', enabled=self.use_amp):
             # input embedding
             x = self.embed(x).masked_fill(~mask.permute(2, 0, 1), 0)  # (P, N, C)
             attn_mask = None
@@ -601,10 +603,12 @@ class ParticleTransformerTagger(nn.Module):
                  trim=True,
                  for_inference=False,
                  use_amp=False,
+                 use_xla=False,
                  **kwargs) -> None:
         super().__init__(**kwargs)
 
         self.use_amp = use_amp
+        self.use_xla = use_xla
 
         self.pf_trimmer = SequenceTrimmer(enabled=trim and not for_inference)
         self.sv_trimmer = SequenceTrimmer(enabled=trim and not for_inference)
@@ -631,7 +635,8 @@ class ParticleTransformerTagger(nn.Module):
                                         # misc
                                         trim=False,
                                         for_inference=for_inference,
-                                        use_amp=use_amp)
+                                        use_amp=use_amp,
+                                        use_xla=use_xla)
 
     @torch.jit.ignore
     def no_weight_decay(self):
@@ -648,7 +653,7 @@ class ParticleTransformerTagger(nn.Module):
             v = torch.cat([pf_v, sv_v], dim=2)
             mask = torch.cat([pf_mask, sv_mask], dim=2)
 
-        with torch.amp.autocast('cuda', enabled=self.use_amp):
+        with torch.autocast('xla' if self.use_xla else 'cuda', enabled=self.use_amp):
             pf_x = self.pf_embed(pf_x)  # after embed: (seq_len, batch, embed_dim)
             sv_x = self.sv_embed(sv_x)
             x = torch.cat([pf_x, sv_x], dim=0)
@@ -680,10 +685,12 @@ class ParticleTransformerTaggerWithExtraPairFeatures(nn.Module):
                  trim=True,
                  for_inference=False,
                  use_amp=False,
+                 use_xla=False,
                  **kwargs) -> None:
         super().__init__(**kwargs)
 
         self.use_amp = use_amp
+        self.use_xla = use_xla
         self.for_inference = for_inference
 
         self.pf_trimmer = SequenceTrimmer(enabled=trim and not for_inference)
@@ -711,7 +718,8 @@ class ParticleTransformerTaggerWithExtraPairFeatures(nn.Module):
                                         # misc
                                         trim=False,
                                         for_inference=for_inference,
-                                        use_amp=use_amp)
+                                        use_amp=use_amp,
+                                        use_xla=use_xla)
 
     @torch.jit.ignore
     def no_weight_decay(self):
@@ -734,7 +742,7 @@ class ParticleTransformerTaggerWithExtraPairFeatures(nn.Module):
             uu = torch.zeros(v.size(0), pf_uu.size(1), v.size(2), v.size(2), dtype=v.dtype, device=v.device)
             uu[:, :, :pf_x.size(2), :pf_x.size(2)] = pf_uu
 
-        with torch.amp.autocast('cuda', enabled=self.use_amp):
+        with torch.autocast('xla' if self.use_xla else 'cuda', enabled=self.use_amp):
             pf_x = self.pf_embed(pf_x)  # after embed: (seq_len, batch, embed_dim)
             sv_x = self.sv_embed(sv_x)
             x = torch.cat([pf_x, sv_x], dim=0)
