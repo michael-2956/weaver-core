@@ -82,6 +82,7 @@ def train_classification(
                 model_output = model(*inputs)
                 logits, label, _ = _flatten_preds(model_output, label=label, mask=mask)
                 loss = loss_func(logits, label)
+                loss_item = loss.detach().cpu().item()
             if grad_scaler is None:
                 loss.backward()
                 opt.step()
@@ -94,7 +95,7 @@ def train_classification(
                 scheduler.step()
 
             _, preds = logits.max(1)
-            loss = loss.item()
+            loss = loss_item
 
             num_examples = label.shape[0]
             label_counter.update(label.numpy(force=True))
