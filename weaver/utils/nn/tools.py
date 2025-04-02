@@ -48,7 +48,7 @@ def _flatten_preds(model_output, label=None, mask=None, label_axis=1):
 
     return preds, label, mask
 
-
+import contextlib
 def train_classification(
         model, loss_func, opt, scheduler, train_loader, dev, epoch, steps_per_epoch=None, grad_scaler=None,
         tb_helper=None):
@@ -64,8 +64,12 @@ def train_classification(
     count = 0
     start_time = time.time()
 
+    if dev == 'xla':
+        import torch_xla
+
     with tqdm.tqdm(train_loader) as tq:
         for X, y, _ in tq:
+          with (torch_xla.step() if dev == 'xla' else contextlib.nullcontext()):
             inputs = [X[k].to(dev) for k in data_config.input_names]
             label = y[data_config.label_names[0]].long().to(dev)
             entry_count += label.shape[0]
@@ -126,6 +130,8 @@ def train_classification(
 
             if steps_per_epoch is not None and num_batches >= steps_per_epoch:
                 break
+        if dev == 'xla':
+            torch_xla.sync()
 
     time_diff = time.time() - start_time
     _logger.info('Processed %d entries in total (avg. speed %.1f entries/s)' % (entry_count, entry_count / time_diff))
@@ -165,9 +171,12 @@ def evaluate_classification(model, test_loader, dev, epoch, for_training=True, l
     labels_counts = []
     observers = defaultdict(list)
     start_time = time.time()
+    if dev == 'xla':
+        import torch_xla
     with torch.no_grad():
         with tqdm.tqdm(test_loader) as tq:
             for X, y, Z in tq:
+              with (torch_xla.step() if dev == 'xla' else contextlib.nullcontext()):
                 # X, y: torch.Tensor; Z: ak.Array
                 inputs = [X[k].to(dev) for k in data_config.input_names]
                 label = y[data_config.label_names[0]].long().to(dev)
@@ -216,6 +225,8 @@ def evaluate_classification(model, test_loader, dev, epoch, for_training=True, l
 
                 if steps_per_epoch is not None and num_batches >= steps_per_epoch:
                     break
+            if dev == 'xla':
+                torch_xla.sync()
 
     time_diff = time.time() - start_time
     _logger.info('Processed %d entries in total (avg. speed %.1f entries/s)' % (entry_count, entry_count / time_diff))
@@ -319,8 +330,12 @@ def train_regression(
     sum_sqr_err = 0
     count = 0
     start_time = time.time()
+    if dev == 'xla':
+        import torch_xla
+
     with tqdm.tqdm(train_loader) as tq:
         for X, y, _ in tq:
+          with (torch_xla.step() if dev == 'xla' else contextlib.nullcontext()):
             inputs = [X[k].to(dev) for k in data_config.input_names]
             label = y[data_config.label_names[0]].float()
             num_examples = label.shape[0]
@@ -375,6 +390,8 @@ def train_regression(
 
             if steps_per_epoch is not None and num_batches >= steps_per_epoch:
                 break
+        if dev == 'xla':
+            torch_xla.sync()
 
     time_diff = time.time() - start_time
     _logger.info('Processed %d entries in total (avg. speed %.1f entries/s)' % (count, count / time_diff))
@@ -414,9 +431,12 @@ def evaluate_regression(model, test_loader, dev, epoch, for_training=True, loss_
     labels = defaultdict(list)
     observers = defaultdict(list)
     start_time = time.time()
+    if dev == 'xla':
+        import torch_xla
     with torch.no_grad():
         with tqdm.tqdm(test_loader) as tq:
             for X, y, Z in tq:
+              with (torch_xla.step() if dev == 'xla' else contextlib.nullcontext()):
                 # X, y: torch.Tensor; Z: ak.Array
                 inputs = [X[k].to(dev) for k in data_config.input_names]
                 label = y[data_config.label_names[0]].float()
@@ -460,6 +480,8 @@ def evaluate_regression(model, test_loader, dev, epoch, for_training=True, loss_
 
                 if steps_per_epoch is not None and num_batches >= steps_per_epoch:
                     break
+            if dev == 'xla':
+                torch_xla.sync()
 
     time_diff = time.time() - start_time
     _logger.info('Processed %d entries in total (avg. speed %.1f entries/s)' % (count, count / time_diff))

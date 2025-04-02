@@ -144,6 +144,8 @@ parser.add_argument('--cross-validation', type=str, default=None,
                     help='enable k-fold cross validation; input format: `variable_name%%k`')
 parser.add_argument('--no-mps', action='store_true', default=False,
                     help='do not use mps even if available')
+parser.add_argument('--use-xla', action='store_true', default=False,
+                    help='Use an XLA device')
 
 
 def to_filelist(args, mode='train'):
@@ -761,6 +763,10 @@ def _main(args):
     else:
         gpus = None
         dev = cpu_or_mps_if_available(args.no_mps)
+    
+    if args.use_xla:
+        import torch_xla
+        dev = 'xla'
 
     _logger.info(f"Using device: {dev}")
 
