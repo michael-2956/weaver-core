@@ -94,7 +94,7 @@ def train_classification(
                 scheduler.step()
 
             _, preds = logits.max(1)
-            loss = loss.item()
+            loss = loss.cpu().item()
 
             num_examples = label.shape[0]
             label_counter.update(label.numpy(force=True))
