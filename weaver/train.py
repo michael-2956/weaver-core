@@ -834,7 +834,9 @@ def _main(args):
 
         # training loop
         best_valid_metric = np.inf if args.regression_mode else 0
-        grad_scaler = torch.amp.GradScaler('cuda') if args.use_amp else None
+        grad_scaler = (
+            torch_xla.amp.GradScaler() if args.use_xla else torch.amp.GradScaler('cuda')
+        ) if args.use_amp else None
         for epoch in range(args.num_epochs):
             if args.load_epoch is not None:
                 if epoch <= args.load_epoch:
