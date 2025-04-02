@@ -94,19 +94,19 @@ def train_classification(
                 scheduler.step()
 
             _, preds = logits.max(1)
-            loss = loss.cpu().item()
+            loss = loss.detach().cpu().item()
 
             num_examples = label.shape[0]
             label_counter.update(label.numpy(force=True))
             num_batches += 1
             count += num_examples
-            correct = (preds == label).sum().item()
+            correct = (preds == label).sum().detach().cpu().item()
             total_loss += loss
             total_correct += correct
 
             probs = F.softmax(logits, dim=1)
             correct_probs = probs[torch.arange(label.size(0)), label]
-            high_conf_p = (correct_probs > 0.5).float().mean().item()
+            high_conf_p = (correct_probs > 0.5).float().mean().detach().cpu().item()
 
             tq.set_postfix({
                 'lr': '%.2e' % scheduler.get_last_lr()[0] if scheduler else opt.defaults['lr'],
@@ -203,11 +203,11 @@ def evaluate_classification(model, test_loader, dev, epoch, for_training=True, l
                     labels_counts.append(np.squeeze(mask.numpy(force=True).sum(axis=-1)))
 
                 _, preds = logits.max(1)
-                loss = 0 if loss_func is None else loss_func(logits, label).item()
+                loss = 0 if loss_func is None else loss_func(logits, label).detach().cpu().item()
 
                 num_batches += 1
                 count += num_examples
-                correct = (preds == label).sum().item()
+                correct = (preds == label).sum().detach().cpu().item()
                 total_loss += loss * num_examples
                 total_correct += correct
 
@@ -362,9 +362,9 @@ def train_regression(
             count += num_examples
             total_loss += loss
             e = preds - label
-            abs_err = e.abs().sum().item()
+            abs_err = e.abs().sum().detach().cpu().item()
             sum_abs_err += abs_err
-            sqr_err = e.square().sum().item()
+            sqr_err = e.square().sum().detach().cpu().item()
             sum_sqr_err += sqr_err
 
             tq.set_postfix({
@@ -452,15 +452,15 @@ def evaluate_regression(model, test_loader, dev, epoch, for_training=True, loss_
                     for k, v in Z.items():
                         observers[k].append(v)
 
-                loss = 0 if loss_func is None else loss_func(preds, label).item()
+                loss = 0 if loss_func is None else loss_func(preds, label).detach().cpu().item()
 
                 num_batches += 1
                 count += num_examples
                 total_loss += loss * num_examples
                 e = preds - label
-                abs_err = e.abs().sum().item()
+                abs_err = e.abs().sum().detach().cpu().item()
                 sum_abs_err += abs_err
-                sqr_err = e.square().sum().item()
+                sqr_err = e.square().sum().detach().cpu().item()
                 sum_sqr_err += sqr_err
 
                 tq.set_postfix({

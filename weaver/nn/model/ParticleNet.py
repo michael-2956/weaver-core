@@ -204,7 +204,7 @@ class ParticleNet(nn.Module):
         if self.use_fusion:
             fts = self.fusion_block(torch.cat(outputs, dim=1)) * mask
 
-#         assert(((fts.abs().sum(dim=1, keepdim=True) != 0).float() - mask.float()).abs().sum().item() == 0)
+#         assert(((fts.abs().sum(dim=1, keepdim=True) != 0).float() - mask.float()).abs().sum().detach().cpu().item() == 0)
         
         if self.for_segmentation:
             x = fts

@@ -750,11 +750,11 @@ class ParticleNeXt(nn.Module):
                 attn = attn.softmax(dim=-1)
                 if self.sa_repeat is not None:
                     attn = attn.repeat(1, self.sa_repeat, 1)
-                # assert(((attn.abs().sum(dim=1, keepdim=True) != 0).float() - mask.float()).abs().sum().item() == 0)
+                # assert(((attn.abs().sum(dim=1, keepdim=True) != 0).float() - mask.float()).abs().sum().detach().cpu().item() == 0)
                 x = (attn * features).sum(dim=-1)
             else:
                 features = masked(features)
-                # assert(((features.abs().sum(dim=1, keepdim=True) != 0).float() - mask.float()).abs().sum().item() == 0)
+                # assert(((features.abs().sum(dim=1, keepdim=True) != 0).float() - mask.float()).abs().sum().detach().cpu().item() == 0)
                 if self.global_aggregation == 'sum':
                     x = features.sum(dim=-1)
                 elif self.global_aggregation == 'max':
