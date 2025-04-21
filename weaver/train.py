@@ -487,6 +487,16 @@ def optim(args, model, device):
         opt = torch.optim.AdamW(parameters, lr=args.start_lr, **optimizer_options)
     elif args.optimizer == 'radam':
         opt = torch.optim.RAdam(parameters, lr=args.start_lr, **optimizer_options)
+    elif args.optimizer == 'soap':
+        from pytorch_optimizer import SOAP
+        opt = SOAP(
+            model.parameters(),
+            lr=args.start_lr,
+            betas=(0.95, 0.95),
+            precondition_frequency=10,
+            max_precond_dim=10_000,
+            **optimizer_options
+        )
 
     # load previous training and resume if `--load-epoch` is set
     if args.load_epoch is not None:

@@ -46,6 +46,11 @@ def atan2(y, x):
 
 
 def to_ptrapphim(x, return_mass=True, eps=1e-8, for_onnx=False):
+    # NOTE: rename function, split with (1, 1, 1, 1, 1)
+    # and do px, py, pz, energy, preds = ...
+    # then return return torch.cat((pt, rapidity, phi, preds), dim=1)
+    # or                 torch.cat((pt, rapidity, phi, preds, m), dim=1)
+
     # x: (N, 4, ...), dim1 : (px, py, pz, E)
     px, py, pz, energy = x.split((1, 1, 1, 1), dim=1)
     pt = torch.sqrt(to_pt2(x, eps=eps))
@@ -77,6 +82,9 @@ def p3_norm(p, eps=1e-8):
 
 
 def pairwise_lv_fts(xi, xj, num_outputs=4, eps=1e-8, for_onnx=False):
+    # NOTE: pti, rapi, phii, predsi = ...
+    #       ptj, rapj, phij, predsj = ...
+
     pti, rapi, phii = to_ptrapphim(xi, False, eps=None, for_onnx=for_onnx).split((1, 1, 1), dim=1)
     ptj, rapj, phij = to_ptrapphim(xj, False, eps=None, for_onnx=for_onnx).split((1, 1, 1), dim=1)
 
@@ -95,6 +103,11 @@ def pairwise_lv_fts(xi, xj, num_outputs=4, eps=1e-8, for_onnx=False):
         xij = xi + xj
         lnm2 = torch.log(to_m2(xij, eps=eps))
         outputs.append(lnm2)
+
+    # NOTE: add here a new num_outputs > 4
+    # shift all next indices by 1
+    # should be outputs.append(predsij)
+    # predsij is formed with predsi, predsj
 
     if num_outputs > 4:
         lnds2 = torch.log(torch.clamp(-to_m2(xi - xj, eps=None), min=eps))
@@ -265,6 +278,7 @@ class PairEmbed(nn.Module):
 
         self.pairwise_lv_dim = pairwise_lv_dim
         self.pairwise_input_dim = pairwise_input_dim
+        # NOTE: change here so that still treated as symmetric
         self.is_symmetric = (pairwise_lv_dim <= 5) and (pairwise_input_dim == 0)
         self.remove_self_pair = remove_self_pair
         self.mode = mode
