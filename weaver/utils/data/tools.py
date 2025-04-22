@@ -50,9 +50,6 @@ def _pad(a, maxlen, value=0, dtype='float32'):
 def _repeat_pad(a, maxlen, dtype='float32'):
     lens = ak.num(a).to_numpy()
     ids = np.broadcast_to(np.arange(maxlen), (len(lens), maxlen)).copy()
-    # if shuffle:
-    #     ids_shift = np.random.randint(0, maxlen, len(a))
-    #     ids += ids_shift[:, np.newaxis]
     ids %= lens[:, np.newaxis]
     flat = ak.flatten(a, axis=None).to_numpy()
     offsets = np.concatenate([[0], np.cumsum(lens)])
