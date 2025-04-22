@@ -586,7 +586,7 @@ class ParticleTransformer(nn.Module):
 
             if self.multiple_pair_embed:
                 # embed pairs & transform
-                if (v is not None or uu is not None) and pair_embedder is not None:
+                if (v is not None or uu is not None) and self.pair_embed is not None:
                     for block, pair_embedder in zip(self.blocks, self.pair_embed):
                         attn_mask = pair_embedder(v, uu).view(-1, v.size(-1), v.size(-1))  # (N*num_heads, P, P)
                         x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask)
