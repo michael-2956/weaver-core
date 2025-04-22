@@ -47,15 +47,15 @@ def _pad(a, maxlen, value=0, dtype='float32'):
         return x
 
 
-def _repeat_pad(a, maxlen, shuffle=False, dtype='float32'):
-    x = ak.to_numpy(ak.flatten(a))
-    x = np.tile(x, int(np.ceil(len(a) * maxlen / len(x))))
-    if shuffle:
-        np.random.shuffle(x)
-    x = x[:len(a) * maxlen].reshape((len(a), maxlen))
-    mask = _pad(ak.zeros_like(a), maxlen, value=1)
-    x = _pad(a, maxlen) + mask * x
-    return ak.values_astype(x, dtype)
+def _repeat_pad(a, maxlen, dtype='float32'):
+    lens = ak.num(a).to_numpy()
+    ids = np.broadcast_to(np.arange(maxlen), (len(lens), maxlen)).copy()
+    ids %= lens[:, np.newaxis]
+    flat = ak.flatten(a, axis=None).to_numpy()
+    offsets = np.concatenate([[0], np.cumsum(lens)])
+    flat_ids = offsets[:-1, None] + ids
+    result = ak.Array(flat[flat_ids])
+    return ak.values_astype(result, dtype)
 
 
 def _clip(a, a_min, a_max):
