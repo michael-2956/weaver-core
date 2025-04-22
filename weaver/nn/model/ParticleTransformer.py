@@ -493,6 +493,7 @@ class ParticleTransformer(nn.Module):
                  cls_block_params={'dropout': 0, 'attn_dropout': 0, 'activation_dropout': 0},
                  fc_params=[],
                  activation='gelu',
+                 multiple_pair_embed=False,
                  # misc
                  trim=True,
                  for_inference=False,
@@ -522,12 +523,26 @@ class ParticleTransformer(nn.Module):
             cfg_cls_block.update(cls_block_params)
         _logger.info('cfg_cls_block: %s' % str(cfg_cls_block))
 
-        self.pair_extra_dim = pair_extra_dim
         self.embed = Embed(input_dim, embed_dims, activation=activation) if len(embed_dims) > 0 else nn.Identity()
-        self.pair_embed = PairEmbed(
-            pair_input_dim, pair_extra_dim, pair_embed_dims + [cfg_block['num_heads']],
-            remove_self_pair=remove_self_pair, use_pre_activation_pair=use_pre_activation_pair,
-            for_onnx=for_inference) if pair_embed_dims is not None and pair_input_dim + pair_extra_dim > 0 else None
+        
+        self.pair_extra_dim = pair_extra_dim
+        self.multiple_pair_embed = multiple_pair_embed
+        if multiple_pair_embed:
+            self.pair_embed = nn.ModuleList([
+                PairEmbed(
+                    pair_input_dim, pair_extra_dim, pair_embed_dims + [cfg_block['num_heads']],
+                    remove_self_pair=remove_self_pair, use_pre_activation_pair=use_pre_activation_pair,
+                    for_onnx=for_inference
+                )
+                for _ in range(num_layers)
+            ]) if pair_embed_dims is not None and pair_input_dim + pair_extra_dim > 0 else None
+        else:
+            self.pair_embed = PairEmbed(
+                pair_input_dim, pair_extra_dim, pair_embed_dims + [cfg_block['num_heads']],
+                remove_self_pair=remove_self_pair, use_pre_activation_pair=use_pre_activation_pair,
+                for_onnx=for_inference
+            ) if pair_embed_dims is not None and pair_input_dim + pair_extra_dim > 0 else None
+        
         self.blocks = nn.ModuleList([AlteredBlock(**cfg_block) for _ in range(num_layers)])
         self.cls_blocks = nn.ModuleList([AlteredBlock(**cfg_cls_block) for _ in range(num_cls_layers)])
         self.norm = nn.LayerNorm(embed_dim)
@@ -568,13 +583,22 @@ class ParticleTransformer(nn.Module):
         with torch.autocast('xla' if self.use_xla else 'cuda', enabled=self.use_amp):
             # input embedding
             x = self.embed(x).masked_fill(~mask.permute(2, 0, 1), 0)  # (P, N, C)
-            attn_mask = None
-            if (v is not None or uu is not None) and self.pair_embed is not None:
-                attn_mask = self.pair_embed(v, uu).view(-1, v.size(-1), v.size(-1))  # (N*num_heads, P, P)
 
-            # transform
-            for block in self.blocks:
-                x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask)
+            if self.multiple_pair_embed:
+                # embed pairs & transform
+                for block, pair_embedder in zip(self.blocks, self.pair_embed):
+                    attn_mask = None
+                    if (v is not None or uu is not None) and pair_embedder is not None:
+                        attn_mask = pair_embedder(v, uu).view(-1, v.size(-1), v.size(-1))  # (N*num_heads, P, P)
+                    x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask)
+            else:
+                attn_mask = None
+                if (v is not None or uu is not None) and self.pair_embed is not None:
+                    attn_mask = self.pair_embed(v, uu).view(-1, v.size(-1), v.size(-1))  # (N*num_heads, P, P)
+                
+                # transform
+                for block in self.blocks:
+                    x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask)
 
             # extract class token
             cls_tokens = self.cls_token.expand(1, x.size(1), -1)  # (1, N, C)
