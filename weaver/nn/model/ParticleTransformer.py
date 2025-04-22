@@ -45,8 +45,8 @@ def atan2(y, x):
     return atan_part + pi_part
 
 
-def to_ptrapphim(x, return_mass=True, eps=1e-8, for_onnx=False):
-    # NOTE: rename function, split with (1, 1, 1, 1, 1)
+def to_pt_rap_phi_m(x, return_mass=True, eps=1e-8, for_onnx=False):
+    # NOTE: (+) rename function, split with (1, 1, 1, 1, 1)
     # and do px, py, pz, energy, preds = ...
     # then return return torch.cat((pt, rapidity, phi, preds), dim=1)
     # or                 torch.cat((pt, rapidity, phi, preds, m), dim=1)
@@ -85,8 +85,8 @@ def pairwise_lv_fts(xi, xj, num_outputs=4, eps=1e-8, for_onnx=False):
     # NOTE: pti, rapi, phii, predsi = ...
     #       ptj, rapj, phij, predsj = ...
 
-    pti, rapi, phii = to_ptrapphim(xi, False, eps=None, for_onnx=for_onnx).split((1, 1, 1), dim=1)
-    ptj, rapj, phij = to_ptrapphim(xj, False, eps=None, for_onnx=for_onnx).split((1, 1, 1), dim=1)
+    pti, rapi, phii = to_pt_rap_phi_m(xi, False, eps=None, for_onnx=for_onnx).split((1, 1, 1), dim=1)
+    ptj, rapj, phij = to_pt_rap_phi_m(xj, False, eps=None, for_onnx=for_onnx).split((1, 1, 1), dim=1)
 
     delta = delta_r2(rapi, phii, rapj, phij).sqrt()
     lndelta = torch.log(delta.clamp(min=eps))

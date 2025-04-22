@@ -67,7 +67,7 @@ def train_classification(
     if dev == 'xla':
         import torch_xla
 
-    with tqdm.tqdm(train_loader) as tq:
+    with tqdm.tqdm(train_loader, mininterval=1) as tq:
         for X, y, _ in tq:
           with (torch_xla.step() if dev == 'xla' else contextlib.nullcontext()):
             inputs = [X[k].to(dev) for k in data_config.input_names]
@@ -174,7 +174,7 @@ def evaluate_classification(model, test_loader, dev, epoch, for_training=True, l
     if dev == 'xla':
         import torch_xla
     with torch.no_grad():
-        with tqdm.tqdm(test_loader) as tq:
+        with tqdm.tqdm(test_loader, mininterval=1) as tq:
             for X, y, Z in tq:
               with (torch_xla.step() if dev == 'xla' else contextlib.nullcontext()):
                 # X, y: torch.Tensor; Z: ak.Array
@@ -280,7 +280,7 @@ def evaluate_onnx(model_path, test_loader, eval_metrics=['roc_auc_score', 'roc_a
     labels = defaultdict(list)
     observers = defaultdict(list)
     start_time = time.time()
-    with tqdm.tqdm(test_loader) as tq:
+    with tqdm.tqdm(test_loader, mininterval=1) as tq:
         for X, y, Z in tq:
             # X, y: torch.Tensor; Z: ak.Array
             inputs = {k: v.numpy(force=True) for k, v in X.items()}
@@ -333,7 +333,7 @@ def train_regression(
     if dev == 'xla':
         import torch_xla
 
-    with tqdm.tqdm(train_loader) as tq:
+    with tqdm.tqdm(train_loader, mininterval=1) as tq:
         for X, y, _ in tq:
           with (torch_xla.step() if dev == 'xla' else contextlib.nullcontext()):
             inputs = [X[k].to(dev) for k in data_config.input_names]
@@ -434,7 +434,7 @@ def evaluate_regression(model, test_loader, dev, epoch, for_training=True, loss_
     if dev == 'xla':
         import torch_xla
     with torch.no_grad():
-        with tqdm.tqdm(test_loader) as tq:
+        with tqdm.tqdm(test_loader, mininterval=1) as tq:
             for X, y, Z in tq:
               with (torch_xla.step() if dev == 'xla' else contextlib.nullcontext()):
                 # X, y: torch.Tensor; Z: ak.Array
