@@ -558,7 +558,8 @@ class ParticleTransformer(nn.Module):
         self.pair_embed = PairEmbed(
                 pair_input_dim, pair_extra_dim, pair_embed_dims + [cfg_block['num_heads']],
                 remove_self_pair=remove_self_pair, use_pre_activation_pair=use_pre_activation_pair,
-                for_onnx=for_inference, multiple_pair_embed=multiple_pair_embed, num_layers=num_layers
+                for_onnx=for_inference, multiple_pair_embed=multiple_pair_embed, num_layers=num_layers,
+                activation=activation,
             ) if pair_embed_dims is not None and pair_input_dim + pair_extra_dim > 0 else None
         
         self.blocks = nn.ModuleList([AlteredBlock(**cfg_block) for _ in range(num_layers)])
