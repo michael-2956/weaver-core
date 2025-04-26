@@ -710,7 +710,7 @@ class ParticleTransformer(nn.Module):
                 fixed_length=trim_mode_fixed_length,
                 warmup_steps=0,
                 trim_in_test=True,
-                shuffle_before_cut=(trim_mode == "fixed_shuffle")
+                shuffle_before_cut=(trim_mode == "fixed_shuffle_always")
             )
         else:
             raise ValueError(f"trim_mode {trim_mode} not supported")
