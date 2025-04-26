@@ -827,57 +827,12 @@ class ParticleTransformerMultipleRuns(nn.Module):
     def __init__(self,
                  input_dim,
                  num_runs=10,
-                 num_classes=None,
-                 # network configurations
-                 pair_input_dim=4,
-                 pair_extra_dim=0,
-                 remove_self_pair=False,
-                 use_pre_activation_pair=True,
-                 embed_dims=[128, 512, 128],
-                 pair_embed_dims=[64, 64, 64],
-                 num_heads=8,
-                 num_layers=8,
-                 num_cls_layers=2,
-                 block_params=None,
-                 cls_block_params={'dropout': 0, 'attn_dropout': 0, 'activation_dropout': 0},
-                 fc_params=[],
-                 activation='gelu',
-                 multiple_pair_embed=False,
-                 # misc
-                 trim=True,
-                 for_inference=False,
-                 use_amp=False,
-                 use_xla=False,
                  **kwargs) -> None:
-        super().__init__(**kwargs)
+        super().__init__()
 
         self.num_runs = num_runs
 
-        self.pt = ParticleTransformer(
-            input_dim,
-            num_classes=num_classes,
-            # network configurations
-            pair_input_dim=pair_input_dim,
-            pair_extra_dim=pair_extra_dim,
-            remove_self_pair=remove_self_pair,
-            use_pre_activation_pair=use_pre_activation_pair,
-            embed_dims=embed_dims,
-            pair_embed_dims=pair_embed_dims,
-            num_heads=num_heads,
-            num_layers=num_layers,
-            num_cls_layers=num_cls_layers,
-            block_params=block_params,
-            cls_block_params=cls_block_params,
-            fc_params=fc_params,
-            activation=activation,
-            multiple_pair_embed=multiple_pair_embed,
-            # misc
-            trim=trim,
-            for_inference=for_inference,
-            use_amp=use_amp,
-            use_xla=use_xla,
-            **kwargs
-        )
+        self.pt = ParticleTransformer(input_dim, **kwargs)
     
     @torch.jit.ignore
     def no_weight_decay(self):
