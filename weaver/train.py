@@ -103,6 +103,8 @@ parser.add_argument('--optimizer-option', nargs=2, action='append', default=[],
 parser.add_argument('--lr-scheduler', type=str, default='flat+decay',
                     choices=['none', 'steps', 'flat+decay', 'flat+linear', 'flat+cos', 'one-cycle'],
                     help='learning rate scheduler')
+parser.add_argument('--lr-decay-ep-fraction', type=float, default=0.3,
+                    help='fraction of decay epochs for the flat+decay option')
 parser.add_argument('--warmup-steps', type=int, default=0,
                     help='number of warm-up steps, only valid for `flat+linear` and `flat+cos` lr schedulers')
 parser.add_argument('--load-epoch', type=int, default=None,
@@ -521,7 +523,7 @@ def optim(args, model, device):
                 opt, milestones=[lr_step, 2 * lr_step], gamma=0.1,
                 last_epoch=-1 if args.load_epoch is None else args.load_epoch)
         elif args.lr_scheduler == 'flat+decay':
-            num_decay_epochs = max(1, int(args.num_epochs * 0.3))
+            num_decay_epochs = max(1, int(args.num_epochs * args.lr_decay_ep_fraction))
             milestones = list(range(args.num_epochs - num_decay_epochs, args.num_epochs))
             gamma = 0.01 ** (1. / num_decay_epochs)
             if len(names_lr_mult):
