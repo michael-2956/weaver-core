@@ -8,7 +8,10 @@ from linformer_pytorch import LinearAttentionHead, get_EF
 class EfficientAttention(nn.Module):
     """
     A drop-in replacement for nn.MultiheadAttention that uses
-    F.scaled_dot_product_attention under the hood.
+    F.scaled_dot_product_attention under the hood when attention_mode='classic'.
+    
+    Otherwise, it uses linear attention. The arguments input_seq_len and
+    lin_proj_dim are used to create relevant projection matrices.
 
     Expects the input q/k/v embeddings to be of embed_dim length.
     """
