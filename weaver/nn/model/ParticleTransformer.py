@@ -819,14 +819,14 @@ class ParticleTransformer(nn.Module):
                         # recalculate pair_embeds if:
                         #     - self.multiple_pair_embed is True
                         #     - it was not yet calculated (for single U case)
-                        embed_index = bi if self.multiple_pair_embed else 0
+                        block_index = bi if self.multiple_pair_embed else 0
 
                         uu_aug = uu
                         if self.pass_prev_attn_w:
                             assert uu_aug is None
                             uu_aug = prev_attn_weight  # None for the first iteration
 
-                        pair_embeds = self.pair_embed(v, uu_aug, embed_index=embed_index)
+                        pair_embeds = self.pair_embed(v, uu_aug, block_index=block_index)
                     attn_mask = pair_embeds.view(-1, v.size(-1), v.size(-1))  # (N*num_heads, P, P)
                 
                 if self.pass_prev_attn_w:
