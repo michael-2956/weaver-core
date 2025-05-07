@@ -419,7 +419,7 @@ class PairEmbed(nn.Module):
                     pair_fts = torch.cat((x, uu), dim=1)
 
         if self.multiple_two_embeds:
-            block_index = min(block_index, 1)  # 1 at max
+            assert block_index <= 1  # 1 at max
         assert block_index < self.n_embeds
         if block_index > 0:
             assert self.multiple_pair_embed
@@ -754,6 +754,7 @@ class ParticleTransformer(nn.Module):
         self.pair_extra_dim = pair_extra_dim
         self.multiple_pair_embed = multiple_pair_embed
         self.multiple_pair_embed_mode = multiple_pair_embed_mode
+        self.multiple_two_embeds = two_embeds(multiple_pair_embed, multiple_pair_embed_mode)
         self.pass_prev_attn_w = pass_prev_attn_w(multiple_pair_embed, multiple_pair_embed_mode)
         if self.pass_prev_attn_w:
             assert pair_extra_dim == 0, f"{pair_extra_dim = } is not supported with {multiple_pair_embed_mode = }"
@@ -821,12 +822,16 @@ class ParticleTransformer(nn.Module):
                         #     - it was not yet calculated (for single U case)
                         block_index = bi if self.multiple_pair_embed else 0
 
-                        uu_aug = uu
-                        if self.pass_prev_attn_w:
-                            assert uu_aug is None
-                            uu_aug = prev_attn_weight  # None for the first iteration
+                        if self.multiple_two_embeds and block_index > 1:
+                            # no need to recalculate
+                            pass
+                        else:
+                            uu_aug = uu
+                            if self.pass_prev_attn_w:
+                                assert uu_aug is None
+                                uu_aug = prev_attn_weight  # None for the first iteration
 
-                        pair_embeds = self.pair_embed(v, uu_aug, block_index=block_index)
+                            pair_embeds = self.pair_embed(v, uu_aug, block_index=block_index)
                     attn_mask = pair_embeds.view(-1, v.size(-1), v.size(-1))  # (N*num_heads, P, P)
                 
                 if self.pass_prev_attn_w:
