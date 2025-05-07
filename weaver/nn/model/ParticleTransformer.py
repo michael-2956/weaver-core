@@ -285,6 +285,24 @@ class Embed(nn.Module):
         return self.embed(x)
 
 
+def pass_prev_attn_w(multiple_pair_embed_mode):
+    """
+        Whether mode needs previous attention weight \\
+        to be passed as uu
+    """
+    return multiple_pair_embed_mode in [
+        "independent_add_prev_attn_wts", "independent_add_prev_attn_wts_two_embeds"
+    ]
+
+def two_embeds(multiple_pair_embed, multiple_pair_embed_mode):
+    """
+        Whether mode has different embedding weights for \\
+        first vs. rest (True) or different for all (False)
+    """
+    return multiple_pair_embed and multiple_pair_embed_mode in [
+        "independent_add_prev_attn_wts_two_embeds"
+    ]
+
 class PairEmbed(nn.Module):
     def __init__(
             self, pairwise_lv_dim, pairwise_input_dim, dims,
@@ -310,17 +328,25 @@ class PairEmbed(nn.Module):
         if multiple_pair_embed:
             assert num_layers is not None
             assert multiple_pair_embed_mode in [
+                # just run different convolutions from the same lv input
                 "independent",
-                "dependent_no_attninputs",
-                "dependent_add_attninputs",
+                # run convolutions from the same lv input, but add prev. attn weights
+                "independent_add_prev_attn_wts",
+                # run convolutions from the same lv input, add prev. attn weights,
+                # but only have separate Us for 1st and rest of the layers
+                "independent_add_prev_attn_wts_two_embeds",
             ]
 
-        if multiple_pair_embed:
-            self.n_embeds = num_layers
+        # we're in a multiple mode but need only two embeds
+        self.multiple_two_embeds = two_embeds(multiple_pair_embed, multiple_pair_embed_mode)
+        if self.multiple_two_embeds:
+            self.n_embeds = 2
+        elif multiple_pair_embed:
+            self.n_embeds = num_layers  # need num_layers embeds
         else:
             self.n_embeds = 1
 
-        def create_conv_sequence(input_dim, dims, n_embeds):
+        def create_conv_sequence(input_dim, dims, n_embeds) -> nn.ModuleList:
             embed_modules = []
             for _ in range(n_embeds):
                 module_list = [nn.BatchNorm1d(input_dim)] if normalize_input else []
@@ -338,16 +364,24 @@ class PairEmbed(nn.Module):
             embed_modules = nn.ModuleList(embed_modules)
 
         if self.mode == 'concat':
-            self.embed = create_conv_sequence(pairwise_lv_dim + pairwise_input_dim, dims, self.n_embeds)
+            if self.multiple_two_embeds:
+                self.embed = create_conv_sequence(pairwise_lv_dim, dims, 1)  # no prev input the first time
+                self.embed.extend(create_conv_sequence(pairwise_lv_dim + pairwise_input_dim, dims, self.n_embeds - 1))
+            else:
+                self.embed = create_conv_sequence(pairwise_lv_dim + pairwise_input_dim, dims, self.n_embeds)
         elif self.mode == 'sum':
             if pairwise_lv_dim > 0:
                 self.embed = create_conv_sequence(pairwise_lv_dim, dims, self.n_embeds)
             if pairwise_input_dim > 0:
-                self.fts_embed = create_conv_sequence(pairwise_input_dim, dims, self.n_embeds)
+                if self.multiple_two_embeds:
+                    self.fts_embed = nn.ModuleList([nn.Module()])  # no prev input the first time
+                    self.fts_embed.extend(create_conv_sequence(pairwise_input_dim, dims, self.n_embeds - 1))
+                else:
+                    self.fts_embed = create_conv_sequence(pairwise_input_dim, dims, self.n_embeds)
         else:
             raise RuntimeError('`mode` can only be `sum` or `concat`')
 
-    def forward(self, x, uu=None, embed_index=0):
+    def forward(self, x, uu=None, block_index=0):
         # x: (batch, v_dim, seq_len)
         # uu: (batch, v_dim, seq_len, seq_len)
         assert (x is not None or uu is not None)
@@ -384,19 +418,21 @@ class PairEmbed(nn.Module):
                 else:
                     pair_fts = torch.cat((x, uu), dim=1)
 
-        assert embed_index < self.n_embeds
-        if embed_index > 0:
+        if self.multiple_two_embeds:
+            block_index = min(block_index, 1)  # 1 at max
+        assert block_index < self.n_embeds
+        if block_index > 0:
             assert self.multiple_pair_embed
 
         if self.mode == 'concat':
-            elements = self.embed[embed_index](pair_fts)  # (batch, embed_dim, num_elements)
+            elements = self.embed[block_index](pair_fts)  # (batch, embed_dim, num_elements)
         elif self.mode == 'sum':
             if x is None:
-                elements = self.fts_embed[embed_index](uu)
+                elements = self.fts_embed[block_index](uu)
             elif uu is None:
-                elements = self.embed[embed_index](x)
+                elements = self.embed[block_index](x)
             else:
-                elements = self.embed[embed_index](x) + self.fts_embed[embed_index](uu)
+                elements = self.embed[block_index](x) + self.fts_embed[block_index](uu)
 
         if self.is_symmetric and not self.for_onnx:
             y = torch.zeros(batch_size, self.out_dim, seq_len, seq_len, dtype=elements.dtype, device=elements.device)
@@ -717,14 +753,20 @@ class ParticleTransformer(nn.Module):
         
         self.pair_extra_dim = pair_extra_dim
         self.multiple_pair_embed = multiple_pair_embed
+        self.multiple_pair_embed_mode = multiple_pair_embed_mode
+        if pass_prev_attn_w(multiple_pair_embed_mode):
+            assert pair_extra_dim == 0, f"{pair_extra_dim = } is not supported with {multiple_pair_embed_mode = }"
+            pair_extra_dim = cfg_block['num_heads']
         self.pair_embed = PairEmbed(
                 pair_input_dim, pair_extra_dim, pair_embed_dims + [cfg_block['num_heads']],
                 remove_self_pair=remove_self_pair, use_pre_activation_pair=use_pre_activation_pair,
-                for_onnx=for_inference, multiple_pair_embed=multiple_pair_embed,
-                multiple_pair_embed_mode=multiple_pair_embed_mode, num_layers=num_layers,
-                activation=activation,
+                for_onnx=for_inference, activation=activation,
+                multiple_pair_embed=multiple_pair_embed,
+                multiple_pair_embed_mode=multiple_pair_embed_mode,
+                num_layers=num_layers,
+                mode="concat" if pass_prev_attn_w(multiple_pair_embed_mode) else "sum"
             ) if pair_embed_dims is not None and pair_input_dim + pair_extra_dim > 0 else None
-        
+
         self.blocks = nn.ModuleList([AlteredBlock(**cfg_block) for _ in range(num_layers)])
         self.cls_blocks = nn.ModuleList([AlteredBlock(**cfg_cls_block) for _ in range(num_cls_layers)])
         self.norm = nn.LayerNorm(embed_dim)
@@ -767,17 +809,32 @@ class ParticleTransformer(nn.Module):
             x = self.embed(x).masked_fill(~mask.permute(2, 0, 1), 0)  # (P, N, C)
 
             add_attn_mask = (v is not None or uu is not None) and self.pair_embed is not None
-            pair_embeds = None
+            pair_embeds, prev_attn_weight = None, None
             for bi, block in enumerate(self.blocks):
+                
                 attn_mask = None
                 if add_attn_mask:
                     if pair_embeds is None or self.multiple_pair_embed:
-                        # recauculate if self.multiple_pair_embed is True
-                        # or if it was not yet calculated before
+                        # recalculate pair_embeds if:
+                        #     - self.multiple_pair_embed is True
+                        #     - it was not yet calculated (for single U case)
                         embed_index = bi if self.multiple_pair_embed else 0
-                        pair_embeds = self.pair_embed(v, uu, embed_index=embed_index)
+
+                        uu_aug = uu
+                        if pass_prev_attn_w(self.multiple_pair_embed_mode):
+                            assert uu_aug is None
+                            uu_aug = prev_attn_weight  # None for the first iteration
+
+                        pair_embeds = self.pair_embed(v, uu_aug, embed_index=embed_index)
                     attn_mask = pair_embeds.view(-1, v.size(-1), v.size(-1))  # (N*num_heads, P, P)
-                x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask)
+                
+                if pass_prev_attn_w(self.multiple_pair_embed_mode):
+                    x, prev_attn_weight = block(
+                        x, x_cls=None, padding_mask=padding_mask,
+                        attn_mask=attn_mask, return_initial_attn_weight=True
+                    )
+                else:
+                    x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask)
 
             # extract class token
             cls_tokens = self.cls_token.expand(1, x.size(1), -1)  # (1, N, C)

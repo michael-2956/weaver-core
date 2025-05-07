@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -61,12 +62,18 @@ class EfficientAttention(nn.Module):
 
     def forward(
             self,
-            query,                  # (Lq, B, embed_dim)
-            key,                    # (Lkv, B, embed_dim)
-            value,                  # (Lkv, B, embed_dim)
-            key_padding_mask=None,  # (B, Lkv)
-            attn_mask=None          # (B*num_heads, Lq, Lkv)
+            query,                            # (Lq, B, embed_dim)
+            key,                              # (Lkv, B, embed_dim)
+            value,                            # (Lkv, B, embed_dim)
+            key_padding_mask=None,            # (B, Lkv)
+            attn_mask=None,                   # (B*num_heads, Lq, Lkv)
+            return_initial_attn_weight=False
         ):
+        """
+        return_initial_attn_weight makes the function \\
+        return (B, num_heads, Lq, Lkv) initial attention weights, \\
+        but makes the computation a bit slower
+        """
         # number of queries, batch size
         Lq, B, _ = query.shape
         # number of keys/values
@@ -123,16 +130,26 @@ class EfficientAttention(nn.Module):
                 assert attn_mask.shape[0] == B * self.num_heads
                 attn_mask = attn_mask.view(B, self.num_heads, Lq, Lkv)  # (B, num_heads, Lq, Lkv)
             
-            with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.CUDNN_ATTENTION, SDPBackend.MATH]):
-                attn_output = F.scaled_dot_product_attention(
-                    q, k, v,
-                    attn_mask=attn_mask,
-                    # ensure dropout does not apply in eval mode
-                    dropout_p=(self.attn_dropout if self.training else 0.0)
-                )  # shape: (B, num_heads, Lq, head_dim)
+            if return_initial_attn_weight:
+                # (B, num_heads, Lq, head_dim) @ (B, num_heads, head_dim, Lkv) = (B, num_heads, Lq, Lkv)
+                attn_weight = q @ k.transpose(-2, -1) / math.sqrt(q.size(-1))
+                if attn_mask is not None:
+                    attn_weight += attn_mask
+                attn_weight = torch.softmax(attn_weight, dim=-1)
+                attn_weight = torch.dropout(attn_weight, (self.attn_dropout if self.training else 0.0), train=True)
+                attn_output = attn_weight @ value
+            else:
+                with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.CUDNN_ATTENTION, SDPBackend.MATH]):
+                    attn_output = F.scaled_dot_product_attention(
+                        q, k, v,
+                        attn_mask=attn_mask,
+                        # ensure dropout does not apply in eval mode
+                        dropout_p=(self.attn_dropout if self.training else 0.0)
+                    )  # shape: (B, num_heads, Lq, head_dim)
         
         elif self.attention_mode == 'linformer':
             
+            assert not return_initial_attn_weight  # may be supported if need be
             assert key_padding_mask.dtype == torch.bool
             assert attn_mask is None
             
@@ -157,7 +174,12 @@ class EfficientAttention(nn.Module):
 
         # Final projection of the results
         # shape: (Lq, B, embed_dim)
-        return self.out_proj(attn_output)
+        output = self.out_proj(attn_output)
+
+        if return_initial_attn_weight:
+            return output, attn_weight
+        else:
+            return output
 
 
 class AlteredBlock(nn.Module):
@@ -193,7 +215,14 @@ class AlteredBlock(nn.Module):
         self.c_attn = nn.Parameter(torch.ones(num_heads), requires_grad=True) if scale_heads else None
         self.w_resid = nn.Parameter(torch.ones(embed_dim), requires_grad=True) if scale_resids else None
 
-    def forward(self, x, x_cls=None, padding_mask=None, attn_mask=None):
+    def forward(
+            self,
+            x,
+            x_cls=None,
+            padding_mask=None,
+            attn_mask=None,
+            return_initial_attn_weight=False
+        ):
         """
         x: (seq_len, batch, embed_dim)
            input to the layer
@@ -215,12 +244,18 @@ class AlteredBlock(nn.Module):
             u = torch.cat((x_cls, x), dim=0)  # (seq_len+1, batch, embed_dim)
             u = self.pre_attn_norm(u)
             # uses the class token as query and the rest as key/value.
-            x = self.attn(u[:1], u, u, key_padding_mask=padding_mask)
+            if return_initial_attn_weight:
+                x, attn_weight = self.attn(u[:1], u, u, key_padding_mask=padding_mask, return_initial_attn_weight=True)
+            else:
+                x = self.attn(u[:1], u, u, key_padding_mask=padding_mask)
         else:
             # Self-attention branch.
             residual = x
             x = self.pre_attn_norm(x)
-            x = self.attn(x, x, x, key_padding_mask=padding_mask, attn_mask=attn_mask)
+            if return_initial_attn_weight:
+                x, attn_weight = self.attn(x, x, x, key_padding_mask=padding_mask, attn_mask=attn_mask, return_initial_attn_weight=True)
+            else:
+                x = self.attn(x, x, x, key_padding_mask=padding_mask, attn_mask=attn_mask)
 
         # Optionally apply head scaling.
         if self.c_attn is not None:
@@ -246,5 +281,9 @@ class AlteredBlock(nn.Module):
         if self.w_resid is not None:
             residual = torch.mul(self.w_resid, residual)
         x = x + residual
-        return x
+
+        if return_initial_attn_weight:
+            return x, attn_weight
+        else:
+            return x
 
