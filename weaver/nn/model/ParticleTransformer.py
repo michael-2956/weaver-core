@@ -361,7 +361,7 @@ class PairEmbed(nn.Module):
                 if use_pre_activation_pair:
                     module_list = module_list[:-1]
                 embed_modules.append(nn.Sequential(*module_list))
-            embed_modules = nn.ModuleList(embed_modules)
+            return nn.ModuleList(embed_modules)
 
         if self.mode == 'concat':
             if self.multiple_two_embeds:
