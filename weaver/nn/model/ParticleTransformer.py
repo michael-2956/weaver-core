@@ -290,7 +290,8 @@ class PairEmbed(nn.Module):
             self, pairwise_lv_dim, pairwise_input_dim, dims,
             remove_self_pair=False, use_pre_activation_pair=True, mode='sum',
             normalize_input=True, activation='gelu', eps=1e-8,
-            for_onnx=False, multiple_pair_embed=False, num_layers=None,
+            for_onnx=False, multiple_pair_embed=False,
+            multiple_pair_embed_mode="independent", num_layers=None,
         ):
         super().__init__()
 
@@ -305,68 +306,48 @@ class PairEmbed(nn.Module):
         self.out_dim = dims[-1]
 
         self.multiple_pair_embed = multiple_pair_embed
+        self.multiple_pair_embed_mode = multiple_pair_embed_mode
         if multiple_pair_embed:
             assert num_layers is not None
+            assert multiple_pair_embed_mode in [
+                "independent",
+                "dependent_no_attninputs",
+                "dependent_add_attninputs",
+            ]
 
         if multiple_pair_embed:
             self.n_embeds = num_layers
         else:
             self.n_embeds = 1
 
-        if self.mode == 'concat':
-            self.embed = []
-            for _ in range(self.n_embeds):
-                input_dim = pairwise_lv_dim + pairwise_input_dim
+        def create_conv_sequence(input_dim, dims, n_embeds):
+            embed_modules = []
+            for _ in range(n_embeds):
                 module_list = [nn.BatchNorm1d(input_dim)] if normalize_input else []
+                prev_dim = input_dim
                 for dim in dims:
                     module_list.extend([
-                        nn.Conv1d(input_dim, dim, 1),
+                        nn.Conv1d(prev_dim, dim, 1),
                         nn.BatchNorm1d(dim),
                         nn.GELU() if activation == 'gelu' else nn.ReLU(),
                     ])
-                    input_dim = dim
+                    prev_dim = dim
                 if use_pre_activation_pair:
                     module_list = module_list[:-1]
-                self.embed.append(nn.Sequential(*module_list))
-            self.embed = nn.ModuleList(self.embed)
+                embed_modules.append(nn.Sequential(*module_list))
+            embed_modules = nn.ModuleList(embed_modules)
+
+        if self.mode == 'concat':
+            self.embed = create_conv_sequence(pairwise_lv_dim + pairwise_input_dim, dims, self.n_embeds)
         elif self.mode == 'sum':
             if pairwise_lv_dim > 0:
-                self.embed = []
-                for _ in range(self.n_embeds):
-                    input_dim = pairwise_lv_dim
-                    module_list = [nn.BatchNorm1d(input_dim)] if normalize_input else []
-                    for dim in dims:
-                        module_list.extend([
-                            nn.Conv1d(input_dim, dim, 1),
-                            nn.BatchNorm1d(dim),
-                            nn.GELU() if activation == 'gelu' else nn.ReLU(),
-                        ])
-                        input_dim = dim
-                    if use_pre_activation_pair:
-                        module_list = module_list[:-1]
-                    self.embed.append(nn.Sequential(*module_list))
-                self.embed = nn.ModuleList(self.embed)
-
+                self.embed = create_conv_sequence(pairwise_lv_dim, dims, self.n_embeds)
             if pairwise_input_dim > 0:
-                self.fts_embed = []
-                for _ in range(self.n_embeds):
-                    input_dim = pairwise_input_dim
-                    module_list = [nn.BatchNorm1d(input_dim)] if normalize_input else []
-                    for dim in dims:
-                        module_list.extend([
-                            nn.Conv1d(input_dim, dim, 1),
-                            nn.BatchNorm1d(dim),
-                            nn.GELU() if activation == 'gelu' else nn.ReLU(),
-                        ])
-                        input_dim = dim
-                    if use_pre_activation_pair:
-                        module_list = module_list[:-1]
-                    self.fts_embed.append(nn.Sequential(*module_list))
-                self.fts_embed = nn.ModuleList(self.fts_embed)
+                self.fts_embed = create_conv_sequence(pairwise_input_dim, dims, self.n_embeds)
         else:
             raise RuntimeError('`mode` can only be `sum` or `concat`')
 
-    def forward(self, x, uu=None):
+    def forward(self, x, uu=None, embed_index=0):
         # x: (batch, v_dim, seq_len)
         # uu: (batch, v_dim, seq_len, seq_len)
         assert (x is not None or uu is not None)
@@ -403,32 +384,28 @@ class PairEmbed(nn.Module):
                 else:
                     pair_fts = torch.cat((x, uu), dim=1)
 
-        ys = []
+        assert embed_index < self.n_embeds
+        if embed_index > 0:
+            assert self.multiple_pair_embed
 
-        for emb_i in range(self.n_embeds):
-            if self.mode == 'concat':
-                elements = self.embed[emb_i](pair_fts)  # (batch, embed_dim, num_elements)
-            elif self.mode == 'sum':
-                if x is None:
-                    elements = self.fts_embed[emb_i](uu)
-                elif uu is None:
-                    elements = self.embed[emb_i](x)
-                else:
-                    elements = self.embed[emb_i](x) + self.fts_embed[emb_i](uu)
-
-            if self.is_symmetric and not self.for_onnx:
-                y = torch.zeros(batch_size, self.out_dim, seq_len, seq_len, dtype=elements.dtype, device=elements.device)
-                y[:, :, i, j] = elements
-                y[:, :, j, i] = elements
+        if self.mode == 'concat':
+            elements = self.embed[embed_index](pair_fts)  # (batch, embed_dim, num_elements)
+        elif self.mode == 'sum':
+            if x is None:
+                elements = self.fts_embed[embed_index](uu)
+            elif uu is None:
+                elements = self.embed[embed_index](x)
             else:
-                y = elements.view(-1, self.out_dim, seq_len, seq_len)
-            
-            ys.append(y)
-        
-        if self.multiple_pair_embed:
-            return ys
+                elements = self.embed[embed_index](x) + self.fts_embed[embed_index](uu)
+
+        if self.is_symmetric and not self.for_onnx:
+            y = torch.zeros(batch_size, self.out_dim, seq_len, seq_len, dtype=elements.dtype, device=elements.device)
+            y[:, :, i, j] = elements
+            y[:, :, j, i] = elements
         else:
-            return ys[0]
+            y = elements.view(-1, self.out_dim, seq_len, seq_len)
+
+        return y
 
 
 class Block(nn.Module):
@@ -686,6 +663,7 @@ class ParticleTransformer(nn.Module):
                  fc_params=[],
                  activation='gelu',
                  multiple_pair_embed=False,
+                 multiple_pair_embed_mode="independent",
                  # misc
                  trim=True,
                  trim_mode="random_cutoff_in_train",
@@ -742,7 +720,8 @@ class ParticleTransformer(nn.Module):
         self.pair_embed = PairEmbed(
                 pair_input_dim, pair_extra_dim, pair_embed_dims + [cfg_block['num_heads']],
                 remove_self_pair=remove_self_pair, use_pre_activation_pair=use_pre_activation_pair,
-                for_onnx=for_inference, multiple_pair_embed=multiple_pair_embed, num_layers=num_layers,
+                for_onnx=for_inference, multiple_pair_embed=multiple_pair_embed,
+                multiple_pair_embed_mode=multiple_pair_embed_mode, num_layers=num_layers,
                 activation=activation,
             ) if pair_embed_dims is not None and pair_input_dim + pair_extra_dim > 0 else None
         
@@ -786,25 +765,19 @@ class ParticleTransformer(nn.Module):
         with torch.autocast('xla' if self.use_xla else 'cuda', enabled=self.use_amp):
             # input embedding
             x = self.embed(x).masked_fill(~mask.permute(2, 0, 1), 0)  # (P, N, C)
-            
+
+            add_attn_mask = (v is not None or uu is not None) and self.pair_embed is not None
             pair_embeds = None
-            if (v is not None or uu is not None) and self.pair_embed is not None:
-                pair_embeds = self.pair_embed(v, uu)
-            if pair_embeds is None:
-                # no attention mask here
-                for block in self.blocks:
-                    x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=None)
-            else:
-                if self.multiple_pair_embed:
-                    # pair_embeds is a list
-                    for block, pair_embed in zip(self.blocks, pair_embeds):
-                        attn_mask = pair_embed.view(-1, v.size(-1), v.size(-1))  # (N*num_heads, P, P)
-                        x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask)
-                else:
-                    # pair_embeds is not actually a list
+            for bi, block in enumerate(self.blocks):
+                attn_mask = None
+                if add_attn_mask:
+                    if pair_embeds is None or self.multiple_pair_embed:
+                        # recauculate if self.multiple_pair_embed is True
+                        # or if it was not yet calculated before
+                        embed_index = bi if self.multiple_pair_embed else 0
+                        pair_embeds = self.pair_embed(v, uu, embed_index=embed_index)
                     attn_mask = pair_embeds.view(-1, v.size(-1), v.size(-1))  # (N*num_heads, P, P)
-                    for block in self.blocks:
-                        x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask)
+                x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask)
 
             # extract class token
             cls_tokens = self.cls_token.expand(1, x.size(1), -1)  # (1, N, C)
