@@ -137,7 +137,7 @@ class EfficientAttention(nn.Module):
                     attn_weight += attn_mask
                 attn_weight = torch.softmax(attn_weight, dim=-1)
                 attn_weight = torch.dropout(attn_weight, (self.attn_dropout if self.training else 0.0), train=True)
-                attn_output = attn_weight @ value
+                attn_output = attn_weight @ v
             else:
                 with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.CUDNN_ATTENTION, SDPBackend.MATH]):
                     attn_output = F.scaled_dot_product_attention(
