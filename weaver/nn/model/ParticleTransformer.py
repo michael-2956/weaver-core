@@ -285,12 +285,12 @@ class Embed(nn.Module):
         return self.embed(x)
 
 
-def pass_prev_attn_w(multiple_pair_embed_mode):
+def pass_prev_attn_w(multiple_pair_embed, multiple_pair_embed_mode):
     """
         Whether mode needs previous attention weight \\
         to be passed as uu
     """
-    return multiple_pair_embed_mode in [
+    return multiple_pair_embed and multiple_pair_embed_mode in [
         "independent_add_prev_attn_wts", "independent_add_prev_attn_wts_two_embeds"
     ]
 
@@ -754,7 +754,8 @@ class ParticleTransformer(nn.Module):
         self.pair_extra_dim = pair_extra_dim
         self.multiple_pair_embed = multiple_pair_embed
         self.multiple_pair_embed_mode = multiple_pair_embed_mode
-        if pass_prev_attn_w(multiple_pair_embed_mode):
+        self.do_pass_prev_attn_w = pass_prev_attn_w(multiple_pair_embed, multiple_pair_embed_mode)
+        if self.do_pass_prev_attn_w:
             assert pair_extra_dim == 0, f"{pair_extra_dim = } is not supported with {multiple_pair_embed_mode = }"
             pair_extra_dim = cfg_block['num_heads']
         self.pair_embed = PairEmbed(
@@ -764,7 +765,7 @@ class ParticleTransformer(nn.Module):
                 multiple_pair_embed=multiple_pair_embed,
                 multiple_pair_embed_mode=multiple_pair_embed_mode,
                 num_layers=num_layers,
-                mode="concat" if pass_prev_attn_w(multiple_pair_embed_mode) else "sum"
+                mode="concat" if self.do_pass_prev_attn_w else "sum"
             ) if pair_embed_dims is not None and pair_input_dim + pair_extra_dim > 0 else None
 
         self.blocks = nn.ModuleList([AlteredBlock(**cfg_block) for _ in range(num_layers)])
@@ -821,14 +822,14 @@ class ParticleTransformer(nn.Module):
                         embed_index = bi if self.multiple_pair_embed else 0
 
                         uu_aug = uu
-                        if pass_prev_attn_w(self.multiple_pair_embed_mode):
+                        if self.do_pass_prev_attn_w:
                             assert uu_aug is None
                             uu_aug = prev_attn_weight  # None for the first iteration
 
                         pair_embeds = self.pair_embed(v, uu_aug, embed_index=embed_index)
                     attn_mask = pair_embeds.view(-1, v.size(-1), v.size(-1))  # (N*num_heads, P, P)
                 
-                if pass_prev_attn_w(self.multiple_pair_embed_mode):
+                if self.do_pass_prev_attn_w:
                     x, prev_attn_weight = block(
                         x, x_cls=None, padding_mask=padding_mask,
                         attn_mask=attn_mask, return_initial_attn_weight=True
