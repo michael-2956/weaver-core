@@ -67,12 +67,19 @@ class EfficientAttention(nn.Module):
             value,                            # (Lkv, B, embed_dim)
             key_padding_mask=None,            # (B, Lkv)
             attn_mask=None,                   # (B*num_heads, Lq, Lkv)
-            return_initial_attn_weight=False
+            return_final_attn_weight=False,
+            return_qk_attn_weight_logits=False,
+            use_qk_attn_weight_logits=None,   # (B, num_heads, Lq, Lkv)
         ):
         """
-        return_initial_attn_weight makes the function \\
-        return (B, num_heads, Lq, Lkv) initial attention weights, \\
-        but makes the computation a bit slower
+        - `return_final_attn_weight` makes the function \\
+          return `(B, num_heads, Lq, Lkv)` final softmax attention weights, \\
+          but makes the computation a bit slower
+        - `return_qk_attn_weight_logits` makes the function \\
+          return `(B, num_heads, Lq, Lkv)` initial (no masks, no softmax) \\
+          attention weight logits and makes the function not compute output
+        - `use_qk_attn_weight_logits` should be the transformed attn weight logits \\
+          of shape `(B, num_heads, Lq, Lkv)`
         """
         # number of queries, batch size
         Lq, B, _ = query.shape
@@ -112,6 +119,10 @@ class EfficientAttention(nn.Module):
         k = k.view(B, Lkv, self.num_heads, self.head_dim).transpose(1, 2) # shape: (B, num_heads, Lkv, head_dim)
         v = v.view(B, Lkv, self.num_heads, self.head_dim).transpose(1, 2) # shape: (B, num_heads, Lkv, head_dim)
 
+        if return_qk_attn_weight_logits:
+            assert self.attention_mode == 'classic'  # linformer may be supported if need be
+            return q @ k.transpose(-2, -1) / math.sqrt(q.size(-1))
+
         if self.attention_mode == 'classic':
             
             if key_padding_mask is not None:
@@ -130,9 +141,12 @@ class EfficientAttention(nn.Module):
                 assert attn_mask.shape[0] == B * self.num_heads
                 attn_mask = attn_mask.view(B, self.num_heads, Lq, Lkv)  # (B, num_heads, Lq, Lkv)
             
-            if return_initial_attn_weight:
-                # (B, num_heads, Lq, head_dim) @ (B, num_heads, head_dim, Lkv) = (B, num_heads, Lq, Lkv)
-                attn_weight = q @ k.transpose(-2, -1) / math.sqrt(q.size(-1))
+            if return_final_attn_weight:
+                if use_qk_attn_weight_logits is None:
+                    # (B, num_heads, Lq, head_dim) @ (B, num_heads, head_dim, Lkv) = (B, num_heads, Lq, Lkv)
+                    attn_weight = q @ k.transpose(-2, -1) / math.sqrt(q.size(-1))
+                else:
+                    attn_weight = use_qk_attn_weight_logits
                 if attn_mask is not None:
                     attn_weight += attn_mask
                 attn_weight = torch.softmax(attn_weight, dim=-1)
@@ -149,7 +163,8 @@ class EfficientAttention(nn.Module):
         
         elif self.attention_mode == 'linformer':
             
-            assert not return_initial_attn_weight  # may be supported if need be
+            assert not return_final_attn_weight  # may be supported if need be
+            assert use_qk_attn_weight_logits is None  # linformer would need something different here
             assert key_padding_mask.dtype == torch.bool
             assert attn_mask is None
             
@@ -176,7 +191,7 @@ class EfficientAttention(nn.Module):
         # shape: (Lq, B, embed_dim)
         output = self.out_proj(attn_output)
 
-        if return_initial_attn_weight:
+        if return_final_attn_weight:
             return output, attn_weight
         else:
             return output
@@ -221,7 +236,7 @@ class AlteredBlock(nn.Module):
             x_cls=None,
             padding_mask=None,
             attn_mask=None,
-            return_initial_attn_weight=False
+            return_final_attn_weight=False
         ):
         """
         x: (seq_len, batch, embed_dim)
@@ -244,16 +259,16 @@ class AlteredBlock(nn.Module):
             u = torch.cat((x_cls, x), dim=0)  # (seq_len+1, batch, embed_dim)
             u = self.pre_attn_norm(u)
             # uses the class token as query and the rest as key/value.
-            if return_initial_attn_weight:
-                x, attn_weight = self.attn(u[:1], u, u, key_padding_mask=padding_mask, return_initial_attn_weight=True)
+            if return_final_attn_weight:
+                x, attn_weight = self.attn(u[:1], u, u, key_padding_mask=padding_mask, return_final_attn_weight=True)
             else:
                 x = self.attn(u[:1], u, u, key_padding_mask=padding_mask)
         else:
             # Self-attention branch.
             residual = x
             x = self.pre_attn_norm(x)
-            if return_initial_attn_weight:
-                x, attn_weight = self.attn(x, x, x, key_padding_mask=padding_mask, attn_mask=attn_mask, return_initial_attn_weight=True)
+            if return_final_attn_weight:
+                x, attn_weight = self.attn(x, x, x, key_padding_mask=padding_mask, attn_mask=attn_mask, return_final_attn_weight=True)
             else:
                 x = self.attn(x, x, x, key_padding_mask=padding_mask, attn_mask=attn_mask)
 
@@ -282,7 +297,7 @@ class AlteredBlock(nn.Module):
             residual = torch.mul(self.w_resid, residual)
         x = x + residual
 
-        if return_initial_attn_weight:
+        if return_final_attn_weight:
             return x, attn_weight
         else:
             return x
