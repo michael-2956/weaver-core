@@ -700,6 +700,7 @@ class ParticleTransformer(nn.Module):
                  activation='gelu',
                  multiple_pair_embed=False,
                  multiple_pair_embed_mode="independent",
+                 identical_attn_weights=False,
                  # misc
                  trim=True,
                  trim_mode="random_cutoff_in_train",
@@ -732,6 +733,9 @@ class ParticleTransformer(nn.Module):
         self.for_inference = for_inference
         self.use_amp = use_amp
         self.use_xla = use_xla
+        self.identical_attn_weights = identical_attn_weights
+        self.num_layers = num_layers
+        self.num_cls_layers = num_cls_layers
 
         embed_dim = embed_dims[-1] if len(embed_dims) > 0 else input_dim
         default_cfg = dict(embed_dim=embed_dim, num_heads=num_heads, ffn_ratio=4,
@@ -768,8 +772,12 @@ class ParticleTransformer(nn.Module):
                 mode="concat" if self.pass_prev_attn_w else "sum"
             ) if pair_embed_dims is not None and pair_input_dim + pair_extra_dim > 0 else None
 
-        self.blocks = nn.ModuleList([AlteredBlock(**cfg_block) for _ in range(num_layers)])
-        self.cls_blocks = nn.ModuleList([AlteredBlock(**cfg_cls_block) for _ in range(num_cls_layers)])
+        if identical_attn_weights:
+            self.blocks = nn.ModuleList([AlteredBlock(**cfg_block) for _ in range(1)])
+            self.cls_blocks = nn.ModuleList([AlteredBlock(**cfg_cls_block) for _ in range(1)])
+        else:
+            self.blocks = nn.ModuleList([AlteredBlock(**cfg_block) for _ in range(num_layers)])
+            self.cls_blocks = nn.ModuleList([AlteredBlock(**cfg_cls_block) for _ in range(num_cls_layers)])
         self.norm = nn.LayerNorm(embed_dim)
 
         if fc_params is not None:
@@ -811,7 +819,12 @@ class ParticleTransformer(nn.Module):
 
             add_attn_mask = (v is not None or uu is not None) and self.pair_embed is not None
             pair_embeds, prev_attn_weight = None, None
-            for bi, block in enumerate(self.blocks):
+            for bi in range(self.num_layers):
+
+                if self.identical_attn_weights:
+                    block = self.blocks[0]
+                else:
+                    block = self.blocks[bi]
                 
                 attn_mask = None
                 if add_attn_mask:
@@ -839,8 +852,12 @@ class ParticleTransformer(nn.Module):
 
             # extract class token
             cls_tokens = self.cls_token.expand(1, x.size(1), -1)  # (1, N, C)
-            for block in self.cls_blocks:
-                cls_tokens = block(x, x_cls=cls_tokens, padding_mask=padding_mask)
+            for cbi in range(self.num_cls_layers):
+                if self.identical_attn_weights:
+                    cls_block = self.cls_blocks[0]
+                else:
+                    cls_block = self.cls_blocks[cbi]
+                cls_tokens = cls_block(x, x_cls=cls_tokens, padding_mask=padding_mask)
 
             x_cls = self.norm(cls_tokens).squeeze(0)
 
