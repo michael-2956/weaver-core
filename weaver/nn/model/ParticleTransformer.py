@@ -862,7 +862,7 @@ class ParticleTransformer(nn.Module):
                     # completely different logic here
                     qk_attn_weight_logits = block(x, x_cls=None, padding_mask=None, attn_mask=None, return_qk_attn_weight_logits=True)
                     assert uu is None  # not supported here
-                    pair_embeds = self.pair_embed(v, qk_attn_weight_logits, block_index=block_index)
+                    pair_embeds = self.pair_embed(v, qk_attn_weight_logits, block_index=bi)
                     x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=None, use_qk_attn_weight_logits=pair_embeds)
                     continue
 
