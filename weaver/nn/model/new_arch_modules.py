@@ -236,7 +236,9 @@ class AlteredBlock(nn.Module):
             x_cls=None,
             padding_mask=None,
             attn_mask=None,
-            return_final_attn_weight=False
+            return_final_attn_weight=False,
+            return_qk_attn_weight_logits=False,
+            use_qk_attn_weight_logits=None,   # (B, num_heads, Lq, Lkv)
         ):
         """
         x: (seq_len, batch, embed_dim)
@@ -258,6 +260,8 @@ class AlteredBlock(nn.Module):
             residual = x_cls
             u = torch.cat((x_cls, x), dim=0)  # (seq_len+1, batch, embed_dim)
             u = self.pre_attn_norm(u)
+            assert not return_qk_attn_weight_logits   # support can be added if need be
+            assert use_qk_attn_weight_logits is None  # support can be added if need be
             # uses the class token as query and the rest as key/value.
             if return_final_attn_weight:
                 x, attn_weight = self.attn(u[:1], u, u, key_padding_mask=padding_mask, return_final_attn_weight=True)
@@ -267,10 +271,19 @@ class AlteredBlock(nn.Module):
             # Self-attention branch.
             residual = x
             x = self.pre_attn_norm(x)
-            if return_final_attn_weight:
-                x, attn_weight = self.attn(x, x, x, key_padding_mask=padding_mask, attn_mask=attn_mask, return_final_attn_weight=True)
+            
+            if return_qk_attn_weight_logits:
+                assert use_qk_attn_weight_logits is None
+                return self.attn(x, x, x, key_padding_mask=padding_mask, attn_mask=attn_mask, return_qk_attn_weight_logits=True)
+            if use_qk_attn_weight_logits is not None:
+                assert not return_final_attn_weight  # support can be added if need be
+                assert not return_qk_attn_weight_logits
+                x = self.attn(x, x, x, key_padding_mask=padding_mask, attn_mask=attn_mask, use_qk_attn_weight_logits=use_qk_attn_weight_logits)
             else:
-                x = self.attn(x, x, x, key_padding_mask=padding_mask, attn_mask=attn_mask)
+                if return_final_attn_weight:
+                    x, attn_weight = self.attn(x, x, x, key_padding_mask=padding_mask, attn_mask=attn_mask, return_final_attn_weight=True)
+                else:
+                    x = self.attn(x, x, x, key_padding_mask=padding_mask, attn_mask=attn_mask)
 
         # Optionally apply head scaling.
         if self.c_attn is not None:
