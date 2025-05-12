@@ -320,6 +320,57 @@ def two_embeds(multiple_pair_embed, multiple_pair_embed_mode):
         "independent_add_prev_attn_wts_two_embeds"
     ]
 
+
+class Residual1x1Block(nn.Module):
+    def __init__(self, in_dim, out_dim, activation='gelu', with_residual=False):
+        super().__init__()
+        self.conv = nn.Conv1d(in_dim, out_dim, kernel_size=1)
+        self.bn = nn.BatchNorm1d(out_dim)
+        self.act = nn.GELU() if activation=='gelu' else nn.ReLU()
+        
+        self.with_residual = with_residual
+        if with_residual:
+            if in_dim != out_dim:
+                layers = [nn.Conv1d(in_dim, out_dim, kernel_size=1)]
+                layers.append(nn.BatchNorm1d(out_dim))
+                self.skip = nn.Sequential(*layers)
+            else:
+                self.skip = nn.Identity()
+
+    def forward(self, x):
+        if self.with_residual:
+            identity = self.skip(x)
+        out = self.conv(x)
+        out = self.bn(out)
+        out = self.act(out)
+        if self.with_residual:
+            return out + identity
+        else:
+            return out
+
+
+def create_conv_sequence(
+        input_dim, dims, n_embeds, normalize_input=True,
+        activation='gelu', use_pre_activation_pair=False,
+        with_residual=False,
+    ) -> nn.ModuleList:
+    embed_modules = []
+    for _ in range(n_embeds):
+        modules = []
+        if normalize_input:
+            modules.append(nn.BatchNorm1d(input_dim))
+        prev_dim = input_dim
+        for dim in dims:
+            modules.append(Residual1x1Block(prev_dim, dim, activation=activation, with_residual=with_residual))
+            prev_dim = dim
+        if use_pre_activation_pair:
+            last = modules[-1]
+            if isinstance(last, Residual1x1Block):
+                last.act = nn.Identity()
+        embed_modules.append(nn.Sequential(*modules))
+    return nn.ModuleList(embed_modules)
+
+
 class PairEmbed(nn.Module):
     def __init__(
             self, pairwise_lv_dim, pairwise_input_dim, dims,
@@ -327,6 +378,7 @@ class PairEmbed(nn.Module):
             normalize_input=True, activation='gelu', eps=1e-8,
             for_onnx=False, multiple_pair_embed=False,
             multiple_pair_embed_mode="independent", num_layers=None,
+            with_residual=False
         ):
         super().__init__()
 
@@ -371,42 +423,33 @@ class PairEmbed(nn.Module):
         else:
             self.n_embeds = 1
 
-        def create_conv_sequence(input_dim, dims, n_embeds) -> nn.ModuleList:
-            embed_modules = []
-            for _ in range(n_embeds):
-                module_list = [nn.BatchNorm1d(input_dim)] if normalize_input else []
-                prev_dim = input_dim
-                for dim in dims:
-                    module_list.extend([
-                        nn.Conv1d(prev_dim, dim, 1),
-                        nn.BatchNorm1d(dim),
-                        nn.GELU() if activation == 'gelu' else nn.ReLU(),
-                    ])
-                    prev_dim = dim
-                if use_pre_activation_pair:
-                    module_list = module_list[:-1]
-                embed_modules.append(nn.Sequential(*module_list))
-            return nn.ModuleList(embed_modules)
+        create_conv_sequence_p = partial(
+            create_conv_sequence,
+            normalize_input=normalize_input,
+            activation=activation,
+            use_pre_activation_pair=use_pre_activation_pair,
+            with_residual=with_residual,
+        )
 
         if self.mode == 'concat':
             if self.pass_prev_attn_w:
                 # no prev input the first time
-                self.embed = create_conv_sequence(pairwise_lv_dim, dims, 1)
+                self.embed = create_conv_sequence_p(pairwise_lv_dim, dims, 1)
             else:
-                self.embed = create_conv_sequence(pairwise_lv_dim + pairwise_input_dim, dims, 1)
+                self.embed = create_conv_sequence_p(pairwise_lv_dim + pairwise_input_dim, dims, 1)
             # add the rest
-            self.embed.extend(create_conv_sequence(pairwise_lv_dim + pairwise_input_dim, dims, self.n_embeds - 1))
+            self.embed.extend(create_conv_sequence_p(pairwise_lv_dim + pairwise_input_dim, dims, self.n_embeds - 1))
         elif self.mode == 'sum':
             if pairwise_lv_dim > 0:
-                self.embed = create_conv_sequence(pairwise_lv_dim, dims, self.n_embeds)
+                self.embed = create_conv_sequence_p(pairwise_lv_dim, dims, self.n_embeds)
             if pairwise_input_dim > 0:
                 if self.pass_prev_attn_w:
                     # no prev input the first time
                     self.fts_embed = nn.ModuleList([nn.Module()])
                 else:
-                    self.fts_embed = create_conv_sequence(pairwise_input_dim, dims, 1)
+                    self.fts_embed = create_conv_sequence_p(pairwise_input_dim, dims, 1)
                 # add the rest
-                self.fts_embed.extend(create_conv_sequence(pairwise_input_dim, dims, self.n_embeds - 1))
+                self.fts_embed.extend(create_conv_sequence_p(pairwise_input_dim, dims, self.n_embeds - 1))
         else:
             raise RuntimeError('`mode` can only be `sum` or `concat`')
 
@@ -732,6 +775,7 @@ class ParticleTransformer(nn.Module):
                  multiple_pair_embed=False,
                  multiple_pair_embed_mode="independent",
                  identical_attn_weights=False,
+                 pair_embed_with_residual=False,
                  # misc
                  trim=True,
                  trim_mode="random_cutoff_in_train",
@@ -801,7 +845,8 @@ class ParticleTransformer(nn.Module):
                 multiple_pair_embed=multiple_pair_embed,
                 multiple_pair_embed_mode=multiple_pair_embed_mode,
                 num_layers=num_layers,
-                mode="concat" if self.pemb_needs_prev_attn_w or self.pemb_transforms_attn_w_logits else "sum"
+                mode="concat" if self.pemb_needs_prev_attn_w or self.pemb_transforms_attn_w_logits else "sum",
+                with_residual=pair_embed_with_residual
             ) if pair_embed_dims is not None and pair_input_dim + pair_extra_dim > 0 else None
 
         if identical_attn_weights:
