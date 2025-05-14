@@ -784,6 +784,7 @@ class ParticleTransformer(nn.Module):
                  for_inference=False,
                  use_amp=False,
                  use_xla=False,
+                 use_trainable_scaled_attn=False,
                  **kwargs) -> None:
         super().__init__(**kwargs)
 
@@ -816,7 +817,8 @@ class ParticleTransformer(nn.Module):
         default_cfg = dict(embed_dim=embed_dim, num_heads=num_heads, ffn_ratio=4,
                            dropout=0.1, attn_dropout=0.1, activation_dropout=0.1,
                            add_bias_kv=False, activation=activation,
-                           scale_fc=True, scale_attn=True, scale_heads=True, scale_resids=True)
+                           scale_fc=True, scale_attn=True, scale_heads=True, scale_resids=True,
+                           use_trainable_scaled_attn=use_trainable_scaled_attn)
 
         cfg_block = copy.deepcopy(default_cfg)
         if block_params is not None:

@@ -25,6 +25,7 @@ class EfficientAttention(nn.Module):
             attention_mode='classic',
             input_seq_len=None,
             lin_proj_dim=None,
+            use_trainable_scaled_attn=False
         ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -39,6 +40,10 @@ class EfficientAttention(nn.Module):
         self.k_proj = nn.Linear(embed_dim, embed_dim)
         self.v_proj = nn.Linear(embed_dim, embed_dim)
         self.out_proj = nn.Linear(embed_dim, embed_dim)
+
+        self.use_trainable_scaled_attn = use_trainable_scaled_attn
+        if use_trainable_scaled_attn:
+            self.scale = nn.Parameter(torch.tensor(torch.sqrt(1 / embed_dim)))
 
         # If add_bias_kv=True, create bias_k and bias_v (shape [1, 1, embed_dim])
         if add_bias_kv:
@@ -59,6 +64,8 @@ class EfficientAttention(nn.Module):
                     E_proj=E_proj, F_proj=E_proj, # becaue self attention
                     causal_mask=None,
                 ))
+
+
 
     def forward(
             self,
@@ -153,12 +160,15 @@ class EfficientAttention(nn.Module):
                 attn_weight = torch.dropout(attn_weight, (self.attn_dropout if self.training else 0.0), train=True)
                 attn_output = attn_weight @ v
             else:
+                if self.use_trainable_scaled_attn:
+                    q = self.scale * q
                 with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.CUDNN_ATTENTION, SDPBackend.MATH]):
                     attn_output = F.scaled_dot_product_attention(
                         q, k, v,
                         attn_mask=attn_mask,
                         # ensure dropout does not apply in eval mode
-                        dropout_p=(self.attn_dropout if self.training else 0.0)
+                        dropout_p=(self.attn_dropout if self.training else 0.0),
+                        scale=1 if self.use_trainable_scaled_attn else None
                     )  # shape: (B, num_heads, Lq, head_dim)
         
         elif self.attention_mode == 'linformer':
@@ -203,7 +213,8 @@ class AlteredBlock(nn.Module):
             dropout=0.1, attn_dropout=0.1, activation_dropout=0.1,
             add_bias_kv=False, activation='gelu',
             attention='classic', input_seq_len=None, lin_proj_dim=None,
-            scale_fc=True, scale_attn=True, scale_heads=True, scale_resids=True
+            scale_fc=True, scale_attn=True, scale_heads=True, scale_resids=True,
+            use_trainable_scaled_attn=False
         ):
         super().__init__()
 
@@ -215,7 +226,8 @@ class AlteredBlock(nn.Module):
         self.pre_attn_norm = nn.LayerNorm(embed_dim)
         self.attn = EfficientAttention(
             embed_dim, num_heads, attn_dropout=attn_dropout, add_bias_kv=add_bias_kv,
-            attention_mode=attention, input_seq_len=input_seq_len, lin_proj_dim=lin_proj_dim
+            attention_mode=attention, input_seq_len=input_seq_len, lin_proj_dim=lin_proj_dim,
+            use_trainable_scaled_attn=use_trainable_scaled_attn
         )
         self.post_attn_norm = nn.LayerNorm(embed_dim) if scale_attn else None
         self.dropout = nn.Dropout(dropout)
