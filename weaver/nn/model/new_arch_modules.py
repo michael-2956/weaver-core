@@ -43,7 +43,7 @@ class EfficientAttention(nn.Module):
 
         self.use_trainable_scaled_attn = use_trainable_scaled_attn
         if use_trainable_scaled_attn:
-            self.scale = nn.Parameter(torch.tensor(torch.sqrt(1 / embed_dim)))
+            self.scale = nn.Parameter(torch.tensor(math.sqrt(1 / embed_dim)))
 
         # If add_bias_kv=True, create bias_k and bias_v (shape [1, 1, embed_dim])
         if add_bias_kv:
