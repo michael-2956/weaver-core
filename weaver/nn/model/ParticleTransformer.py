@@ -776,6 +776,7 @@ class ParticleTransformer(nn.Module):
                  multiple_pair_embed_mode="independent",
                  identical_attn_weights=False,
                  pair_embed_with_residual=False,
+                 return_qk_final_U_attn_weights=False,
                  # misc
                  trim=True,
                  trim_mode="random_cutoff_in_train",
@@ -811,6 +812,7 @@ class ParticleTransformer(nn.Module):
         self.identical_attn_weights = identical_attn_weights
         self.num_layers = num_layers
         self.num_cls_layers = num_cls_layers
+        self.return_qk_final_U_attn_weights = return_qk_final_U_attn_weights
 
         embed_dim = embed_dims[-1] if len(embed_dims) > 0 else input_dim
         default_cfg = dict(embed_dim=embed_dim, num_heads=num_heads, ffn_ratio=4,
@@ -894,6 +896,10 @@ class ParticleTransformer(nn.Module):
             # input embedding
             x = self.embed(x).masked_fill(~mask.permute(2, 0, 1), 0)  # (P, N, C)
 
+            if self.return_qk_final_U_attn_weights:
+                attn_weights_list = []
+                qk_attn_weights_list = []
+
             add_attn_mask = (v is not None or uu is not None) and self.pair_embed is not None
             pair_embeds, prev_attn_weight = None, None
             for bi in range(self.num_layers):
@@ -904,6 +910,7 @@ class ParticleTransformer(nn.Module):
                     block = self.blocks[bi]
 
                 if self.pemb_transforms_attn_w_logits:
+                    assert not self.return_qk_final_U_attn_weights # can be implemented if need be
                     # completely different logic here
                     qk_attn_weight_logits = block(x, x_cls=None, padding_mask=None, attn_mask=None, return_qk_attn_weight_logits=True)
                     assert uu is None  # not supported here
@@ -926,14 +933,24 @@ class ParticleTransformer(nn.Module):
 
                         pair_embeds = self.pair_embed(v, uu_aug, block_index=block_index)
                     attn_mask = pair_embeds.view(-1, v.size(-1), v.size(-1))  # (N*num_heads, P, P)
+
+                if self.return_qk_final_U_attn_weights:
+                    qk_attn_weight_logits = block(x, x_cls=None, padding_mask=None, attn_mask=None, return_qk_attn_weight_logits=True)
+                    qk_attn_weights_list.append(qk_attn_weight_logits.detach().cpu())
                 
                 if self.pemb_needs_prev_attn_w:
                     x, prev_attn_weight = block(
                         x, x_cls=None, padding_mask=padding_mask,
                         attn_mask=attn_mask, return_final_attn_weight=True
                     )
+                    if self.return_qk_final_U_attn_weights:
+                        attn_weights_list.append(attn_weights.detach().cpu())
                 else:
-                    x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask)
+                    if self.return_qk_final_U_attn_weights:
+                        x, attn_weights = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask, return_final_attn_weight=True)
+                        attn_weights_list.append(attn_weights.detach().cpu())
+                    else:
+                        x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask)
 
             # extract class token
             cls_tokens = self.cls_token.expand(1, x.size(1), -1)  # (1, N, C)
@@ -953,6 +970,8 @@ class ParticleTransformer(nn.Module):
             if self.for_inference:
                 output = torch.softmax(output, dim=1)
             # print('output:\n', output)
+            if self.return_qk_final_U_attn_weights:
+                return output, qk_attn_weights_list, attn_weights_list, attn_mask
             return output
 
 
