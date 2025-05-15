@@ -885,7 +885,7 @@ class ParticleTransformer(nn.Module):
 
     @torch.jit.ignore
     def no_weight_decay(self):
-        return {'cls_token', }
+        return {'cls_token', 'sink_token', 'sink_token_v', }
 
     def forward(self, x, v=None, mask=None, uu=None, uu_idx=None):
         # x: (N, C, P)
