@@ -777,6 +777,7 @@ class ParticleTransformer(nn.Module):
                  identical_attn_weights=False,
                  pair_embed_with_residual=False,
                  return_qk_final_U_attn_weights=False,
+                 add_sink_token=False,
                  # misc
                  trim=True,
                  trim_mode="random_cutoff_in_train",
@@ -874,6 +875,11 @@ class ParticleTransformer(nn.Module):
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=True)
         trunc_normal_(self.cls_token, std=.02)
 
+        self.sink_token = None
+        if add_sink_token:
+            self.sink_token = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=True)
+            trunc_normal_(self.cls_token, std=.02)
+
     @torch.jit.ignore
     def no_weight_decay(self):
         return {'cls_token', }
@@ -895,6 +901,13 @@ class ParticleTransformer(nn.Module):
         with torch.autocast('xla' if self.use_xla else 'cuda', enabled=self.use_amp):
             # input embedding
             x = self.embed(x).masked_fill(~mask.permute(2, 0, 1), 0)  # (P, N, C)
+
+            if self.sink_token is not None:
+                with torch.no_grad():
+                    padding_mask = torch.cat((  # sink is not padding, add zeros
+                        torch.zeros_like(padding_mask[:, :1]), padding_mask
+                    ), dim=1)
+                x = torch.cat((self.sink_token, x), dim=0)
 
             if self.return_qk_final_U_attn_weights:
                 attn_weights_list = []
