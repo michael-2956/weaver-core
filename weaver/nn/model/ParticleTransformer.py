@@ -876,16 +876,16 @@ class ParticleTransformer(nn.Module):
         trunc_normal_(self.cls_token, std=.02)
 
         self.sink_token = None
-        self.sink_token_v = None
+        # self.sink_token_v = None
         if add_sink_token:
             self.sink_token = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=True)
             trunc_normal_(self.sink_token, std=.02)
-            self.sink_token_v = nn.Parameter(torch.zeros(1, pair_input_dim, 1), requires_grad=True)
-            trunc_normal_(self.sink_token_v, std=.02)
+            # self.sink_token_v = nn.Parameter(torch.zeros(1, pair_input_dim, 1), requires_grad=True)
+            # trunc_normal_(self.sink_token_v, std=.02)
 
     @torch.jit.ignore
     def no_weight_decay(self):
-        return {'cls_token', 'sink_token', 'sink_token_v', }
+        return {'cls_token', 'sink_token', }  # 'sink_token_v',
 
     def forward(self, x, v=None, mask=None, uu=None, uu_idx=None):
         # x: (N, C, P)
@@ -912,7 +912,7 @@ class ParticleTransformer(nn.Module):
                     ), dim=1)
                 sink_tokens = self.sink_token.expand(1, x.size(1), -1)  # (1, N, C)
                 x = torch.cat((sink_tokens, x), dim=0)  # (P + 1, N, C)
-                sink_tokens_v = self.sink_token_v.expand(v.size(0), -1, 1)  # (N, 4, 1)
+                sink_tokens_v = torch.zeros_like(v[:, :, :1])  # (N, 4, 1)
                 v = torch.cat([sink_tokens_v, v], dim=2)  # (N, 4, P + 1)
 
             if self.return_qk_final_U_attn_weights:
@@ -988,8 +988,8 @@ class ParticleTransformer(nn.Module):
             output = self.fc(x_cls)
             if self.for_inference:
                 output = torch.softmax(output, dim=1)
-            print('output:\n', output)
-            print('isnan:\n', output.isnan().any())
+            # print('output:\n', output)
+            # print('isnan:\n', output.isnan().any())
             if self.return_qk_final_U_attn_weights:
                 return output, qk_attn_weights_list, attn_weights_list, attn_mask
             return output
