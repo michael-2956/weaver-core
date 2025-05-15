@@ -914,6 +914,9 @@ class ParticleTransformer(nn.Module):
                 x = torch.cat((sink_tokens, x), dim=0)  # (P + 1, N, C)
                 sink_tokens_v = self.sink_token_v.expand(v.size(0), -1, 1)  # (N, 4, 1)
                 v = torch.cat([sink_tokens_v, v], dim=2)  # (N, 4, P + 1)
+            
+            print(f"{x.shape = }")
+            print(f"{v.shape = }")
 
             if self.return_qk_final_U_attn_weights:
                 attn_weights_list = []
