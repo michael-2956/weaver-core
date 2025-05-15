@@ -988,7 +988,8 @@ class ParticleTransformer(nn.Module):
             output = self.fc(x_cls)
             if self.for_inference:
                 output = torch.softmax(output, dim=1)
-            print('output:\n', output.isnan().any())
+            print('output:\n', output)
+            print('isnan:\n', output.isnan().any())
             if self.return_qk_final_U_attn_weights:
                 return output, qk_attn_weights_list, attn_weights_list, attn_mask
             return output
