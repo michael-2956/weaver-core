@@ -876,16 +876,13 @@ class ParticleTransformer(nn.Module):
         trunc_normal_(self.cls_token, std=.02)
 
         self.sink_token = None
-        # self.sink_token_v = None
         if add_sink_token:
             self.sink_token = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=True)
             trunc_normal_(self.sink_token, std=.02)
-            # self.sink_token_v = nn.Parameter(torch.zeros(1, pair_input_dim, 1), requires_grad=True)
-            # trunc_normal_(self.sink_token_v, std=.02)
 
     @torch.jit.ignore
     def no_weight_decay(self):
-        return {'cls_token', 'sink_token', }  # 'sink_token_v',
+        return {'cls_token', 'sink_token', }
 
     def forward(self, x, v=None, mask=None, uu=None, uu_idx=None):
         # x: (N, C, P)
@@ -905,13 +902,16 @@ class ParticleTransformer(nn.Module):
             # input embedding
             x = self.embed(x).masked_fill(~mask.permute(2, 0, 1), 0)  # (P, N, C)
 
+            # add sink token if needed
             if self.sink_token is not None:
                 with torch.no_grad():
                     padding_mask = torch.cat((  # sink is not padding, add zeros
                         torch.zeros_like(padding_mask[:, :1]), padding_mask
                     ), dim=1)
+                # duplicate sink token and add it
                 sink_tokens = self.sink_token.expand(1, x.size(1), -1)  # (1, N, C)
                 x = torch.cat((sink_tokens, x), dim=0)  # (P + 1, N, C)
+                # prepend zeros to v to accomovate the sink token
                 sink_tokens_v = torch.zeros_like(v[:, :, :1])  # (N, 4, 1)
                 v = torch.cat([sink_tokens_v, v], dim=2)  # (N, 4, P + 1)
 
