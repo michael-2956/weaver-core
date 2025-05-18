@@ -778,6 +778,7 @@ class ParticleTransformer(nn.Module):
                  pair_embed_with_residual=False,
                  return_qk_final_U_attn_weights=False,
                  add_sink_token=False,
+                 uniformly_add_nblocks=None,
                  # misc
                  trim=True,
                  trim_mode="random_cutoff_in_train",
@@ -814,6 +815,11 @@ class ParticleTransformer(nn.Module):
         self.num_layers = num_layers
         self.num_cls_layers = num_cls_layers
         self.return_qk_final_U_attn_weights = return_qk_final_U_attn_weights
+        self.uniformly_add_nblocks = uniformly_add_nblocks
+
+        if uniformly_add_nblocks is not None:
+            assert identical_attn_weights  # other can be implemented if need be
+            assert isinstance(uniformly_add_nblocks, int)
 
         embed_dim = embed_dims[-1] if len(embed_dims) > 0 else input_dim
         default_cfg = dict(embed_dim=embed_dim, num_heads=num_heads, ffn_ratio=4,
@@ -921,7 +927,11 @@ class ParticleTransformer(nn.Module):
 
             add_attn_mask = (v is not None or uu is not None) and self.pair_embed is not None
             pair_embeds, prev_attn_weight = None, None
-            for bi in range(self.num_layers):
+            num_blocks = self.num_layers
+            if self.uniformly_add_nblocks is not None:
+                num_blocks += torch.randint(0, self.uniformly_add_nblocks + 1)
+            
+            for bi in range(num_blocks):
 
                 if self.identical_attn_weights:
                     block = self.blocks[0]
