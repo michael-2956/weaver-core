@@ -929,7 +929,7 @@ class ParticleTransformer(nn.Module):
             pair_embeds, prev_attn_weight = None, None
             num_blocks = self.num_layers
             if self.uniformly_add_nblocks is not None:
-                num_blocks += torch.randint(0, self.uniformly_add_nblocks + 1)
+                num_blocks += torch.randint(self.uniformly_add_nblocks + 1, size=(1,))[0].item()
             
             for bi in range(num_blocks):
 
