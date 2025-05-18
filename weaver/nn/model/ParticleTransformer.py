@@ -588,7 +588,8 @@ class Block(nn.Module):
             x = self.post_attn_norm(x)
         x = self.dropout(x)
         x += residual
-
+        
+        # ============ FFN Section ============
         residual = x
         x = self.pre_fc_norm(x)
         x = self.act(self.fc1(x))
@@ -600,6 +601,7 @@ class Block(nn.Module):
         if self.w_resid is not None:
             residual = torch.mul(self.w_resid, residual)
         x += residual
+        # ============ FFN Section ============
 
         return x
 
