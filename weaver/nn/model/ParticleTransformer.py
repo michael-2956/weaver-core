@@ -1012,7 +1012,6 @@ class ParticleTransformer(nn.Module):
                 moe_loss_total += moe_loss
 
             # extract class token
-            print(x)
             cls_tokens = self.cls_token.expand(1, x.size(1), -1)  # (1, N, C)
             for cbi in range(self.num_cls_layers):
                 if self.identical_attn_weights:
