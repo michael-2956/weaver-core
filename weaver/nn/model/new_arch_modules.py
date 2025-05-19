@@ -35,7 +35,7 @@ class MoEFFN(nn.Module):
                  embed_dim,
                  ffn_dim,
                  N=16,
-                 k_shared=1,
+                 k_shared=2,
                  m=2,
                  top_k=1,
                  device_count=1,
@@ -62,7 +62,7 @@ class MoEFFN(nn.Module):
         assert int(m) == m, "m must be an int"
         self.num_experts = m * N
         self.expert_dim = math.ceil(ffn_dim / m)
-        self.k_shared = m * k_shared
+        self.k_shared = k_shared
         self.route_experts = self.num_experts - self.k_shared # total experts that can be routed
         self.top_k = self.m * self.top_k                      # total experts used per token (shared + routed)
         self.k_route = self.top_k - self.k_shared             # number of experts chosen by gating (excluding shared)
@@ -425,7 +425,7 @@ class AlteredBlock(nn.Module):
             N=16,
             k_shared=1,
             m=2,
-            top_k=1,
+            top_k=2,
             device_count=1,
             expert_balance_alpha=0.01,
             device_balance_alpha=0.1
