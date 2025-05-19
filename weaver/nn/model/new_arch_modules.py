@@ -21,6 +21,7 @@ class FFNBlockSection(nn.Module):
         self.fc2 = nn.Linear(ffn_dim, embed_dim)
 
     def forward(self, x):
+        print(f'FFN type: {x.dtype}')
         x = self.fc1(x)
         x = self.act(x)
         x = self.act_dropout(x)
