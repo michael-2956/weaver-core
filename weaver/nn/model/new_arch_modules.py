@@ -21,14 +21,12 @@ class FFNBlockSection(nn.Module):
         self.fc2 = nn.Linear(ffn_dim, embed_dim)
 
     def forward(self, x):
-        print(f'FFN in: {x.dtype}')
         x = self.fc1(x)
         x = self.act(x)
         x = self.act_dropout(x)
         if self.post_fc_norm is not None:
             x = self.post_fc_norm(x)
         x = self.fc2(x)
-        print(f'FFN out: {x.dtype}')
         return x
 
 class MoEFFN(nn.Module):
@@ -165,8 +163,6 @@ class MoEFFN(nn.Module):
             # Multiply outputs by their respective gate weights
             expert_out *= gate_batch  # broadcast multiply each vector by the scalar weight
             # Add the weighted outputs to the respective token positions in output_flat
-            print(output_flat.dtype)
-            print(expert_out.dtype)
             output_flat.index_add_(0, token_batch, expert_out)
 
         output = output_flat.view(seq_len, batch_size, embed_dim)
