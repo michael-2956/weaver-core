@@ -77,6 +77,7 @@ class MoEFFN(nn.Module):
         # Expert networks: Each expert is a two-layer feed-forward (FFN) with GELU.
         self.experts = nn.ModuleList([
             FFNBlockSection(embed_dim, self.expert_dim, activation, activation_dropout, scale_fc)
+            for _ in range(self.num_experts)
         ])
 
         # Define grouping of experts into devices for device-level loss calculation.
