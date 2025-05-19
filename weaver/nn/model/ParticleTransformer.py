@@ -779,6 +779,8 @@ class ParticleTransformer(nn.Module):
                  return_qk_final_U_attn_weights=False,
                  add_sink_token=False,
                  uniformly_add_nblocks=None,
+                 # uses cls_block_params & num_cls_layers & identical_attn_weights
+                 weighted_decode_every_layer=False,
                  # misc
                  trim=True,
                  trim_mode="random_cutoff_in_train",
@@ -816,6 +818,7 @@ class ParticleTransformer(nn.Module):
         self.num_cls_layers = num_cls_layers
         self.return_qk_final_U_attn_weights = return_qk_final_U_attn_weights
         self.uniformly_add_nblocks = uniformly_add_nblocks
+        self.weighted_decode_every_layer = weighted_decode_every_layer
 
         if uniformly_add_nblocks is not None:
             assert identical_attn_weights  # other can be implemented if need be
@@ -861,10 +864,16 @@ class ParticleTransformer(nn.Module):
         if identical_attn_weights:
             self.blocks = nn.ModuleList([AlteredBlock(**cfg_block) for _ in range(1)])
             self.cls_blocks = nn.ModuleList([AlteredBlock(**cfg_cls_block) for _ in range(1)])
+            if weighted_decode_every_layer:
+                self.weighting_blocks = nn.ModuleList([AlteredBlock(**cfg_cls_block) for _ in range(1)])
         else:
             self.blocks = nn.ModuleList([AlteredBlock(**cfg_block) for _ in range(num_layers)])
             self.cls_blocks = nn.ModuleList([AlteredBlock(**cfg_cls_block) for _ in range(num_cls_layers)])
+            if weighted_decode_every_layer:
+                self.weighting_blocks = nn.ModuleList([AlteredBlock(**cfg_cls_block) for _ in range(num_cls_layers)])
         self.norm = nn.LayerNorm(embed_dim)
+        if weighted_decode_every_layer:
+            self.weighting_norm = nn.LayerNorm(embed_dim)
 
         if fc_params is not None:
             fcs = []
@@ -877,9 +886,22 @@ class ParticleTransformer(nn.Module):
         else:
             self.fc = None
 
+        if weighted_decode_every_layer:
+            assert fc_params is not None  # can be implemented if need be
+            fcs = []
+            prev_dim = embed_dim
+            for dim, drop_rate in fc_params:
+                fcs.append(nn.Sequential(nn.Linear(prev_dim, dim), nn.ReLU(), nn.Dropout(drop_rate)))
+                prev_dim = dim
+            fcs.append(nn.Linear(prev_dim, 1))
+            self.weighting_fc = nn.Sequential(*fcs)
+
         # init
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=True)
         trunc_normal_(self.cls_token, std=.02)
+        if weighted_decode_every_layer:
+            self.weighting_token = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=True)
+            trunc_normal_(self.weighting_token, std=.02)
 
         self.sink_token = None
         if add_sink_token:
@@ -930,6 +952,22 @@ class ParticleTransformer(nn.Module):
             num_blocks = self.num_layers
             if self.uniformly_add_nblocks is not None:
                 num_blocks += torch.randint(self.uniformly_add_nblocks + 1, size=(1,))[0].item()
+
+            def decode(x_inp, token, blocks, norm):
+                # extract class token
+                cls_tokens = token.expand(1, x_inp.size(1), -1)  # (1, N, C)
+                for cbi in range(self.num_cls_layers):
+                    if self.identical_attn_weights:
+                        cls_block = blocks[0]
+                    else:
+                        cls_block = blocks[cbi]
+                    cls_tokens = cls_block(x_inp, x_cls=cls_tokens, padding_mask=padding_mask)
+                x_cls = norm(cls_tokens).squeeze(0)
+                return x_cls
+            
+            if self.weighted_decode_every_layer:
+                x_weights = []
+                outputs = []
             
             for bi in range(num_blocks):
 
@@ -980,26 +1018,30 @@ class ParticleTransformer(nn.Module):
                         attn_weights_list.append(attn_weights.detach().cpu())
                     else:
                         x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask)
+                
+                if self.weighted_decode_every_layer:
+                    x_weight = decode(x, self.weighting_token, self.weighting_blocks, self.weighting_norm)
+                    x_weight = self.weighting_fc(x_weight)  # (B, 1)
+                    x_weights.append(x_weight)
+                    x_cls = decode(x, self.cls_token, self.cls_blocks, self.norm)
+                    output = self.fc(x_cls)  # (B, num_classes)
+                    outputs.append(output)
 
-            # extract class token
-            cls_tokens = self.cls_token.expand(1, x.size(1), -1)  # (1, N, C)
-            for cbi in range(self.num_cls_layers):
-                if self.identical_attn_weights:
-                    cls_block = self.cls_blocks[0]
-                else:
-                    cls_block = self.cls_blocks[cbi]
-                cls_tokens = cls_block(x, x_cls=cls_tokens, padding_mask=padding_mask)
+            if self.weighted_decode_every_layer:
+                x_weights = torch.cat(x_weights, dim=1)  # (B, num_blocks)
+                x_weights = torch.softmax(x_weights, dim=1)  # (B, num_blocks)
+                outputs = torch.stack(outputs)  # (num_blocks, B, num_classes)
+                output = torch.einsum('bn,nbc->bc', x_weights, outputs)  # (B, num_classes)
+            else:
+                x_cls = decode(x, self.cls_token, self.cls_blocks, self.norm)
+                # fc
+                if self.fc is None:
+                    return x_cls
+                output = self.fc(x_cls)
 
-            x_cls = self.norm(cls_tokens).squeeze(0)
-
-            # fc
-            if self.fc is None:
-                return x_cls
-            output = self.fc(x_cls)
             if self.for_inference:
                 output = torch.softmax(output, dim=1)
-            # print('output:\n', output)
-            # print('isnan:\n', output.isnan().any())
+
             if self.return_qk_final_U_attn_weights:
                 return output, qk_attn_weights_list, attn_weights_list, attn_mask
             return output
