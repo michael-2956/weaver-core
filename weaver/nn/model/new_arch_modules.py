@@ -64,7 +64,7 @@ class MoEFFN(nn.Module):
         self.expert_dim = math.ceil(ffn_dim / m)
         self.k_shared = k_shared
         self.route_experts = self.num_experts - self.k_shared # total experts that can be routed
-        self.top_k = m * self.top_k                      # total experts used per token (shared + routed)
+        self.top_k = m * top_k                      # total experts used per token (shared + routed)
         self.k_route = self.top_k - self.k_shared             # number of experts chosen by gating (excluding shared)
         self.device_count = device_count
         self.expert_balance_alpha = expert_balance_alpha
