@@ -781,6 +781,15 @@ class ParticleTransformer(nn.Module):
                  return_qk_final_U_attn_weights=False,
                  add_sink_token=False,
                  uniformly_add_nblocks=None,
+                 # MoE params
+                 use_moe=True,
+                 N_experts=16,
+                 k_shared=1,
+                 m=2,
+                 top_k=1,
+                 device_count=1,
+                 expert_balance_alpha=0.01,
+                 device_balance_alpha=0.1,
                  # misc
                  trim=True,
                  trim_mode="random_cutoff_in_train",
@@ -824,10 +833,27 @@ class ParticleTransformer(nn.Module):
             assert isinstance(uniformly_add_nblocks, int)
 
         embed_dim = embed_dims[-1] if len(embed_dims) > 0 else input_dim
-        default_cfg = dict(embed_dim=embed_dim, num_heads=num_heads, ffn_ratio=4,
-                           dropout=0.1, attn_dropout=0.1, activation_dropout=0.1,
-                           add_bias_kv=False, activation=activation,
-                           scale_fc=True, scale_attn=True, scale_heads=True, scale_resids=True)
+        default_cfg = dict(embed_dim=embed_dim,
+                           num_heads=num_heads,
+                           ffn_ratio=4,
+                           dropout=0.1,
+                           attn_dropout=0.1,
+                           activation_dropout=0.1,
+                           add_bias_kv=False,
+                           activation=activation,
+                           scale_fc=True,
+                           scale_attn=True,
+                           scale_heads=True,
+                           scale_resids=True,
+                           use_moe=use_moe,
+                           N=N_experts,
+                           k_shared=k_shared,
+                           m=m,
+                           top_k=top_k,
+                           device_count=device_count,
+                           expert_balance_alpha=expert_balance_alpha,
+                           device_balance_alpha=device_balance_alpha
+                           )
 
         cfg_block = copy.deepcopy(default_cfg)
         if block_params is not None:
@@ -932,9 +958,10 @@ class ParticleTransformer(nn.Module):
             num_blocks = self.num_layers
             if self.uniformly_add_nblocks is not None:
                 num_blocks += torch.randint(self.uniformly_add_nblocks + 1, size=(1,))[0].item()
-            
-            for bi in range(num_blocks):
 
+            moe_loss_total = torch.tensor(0.0, device=x.device)
+            for bi in range(num_blocks):
+                moe_loss = torch.tensor(0.0, device=x.device)
                 if self.identical_attn_weights:
                     block = self.blocks[0]
                 else:
@@ -970,7 +997,7 @@ class ParticleTransformer(nn.Module):
                     qk_attn_weights_list.append(qk_attn_weight_logits.detach().cpu())
                 
                 if self.pemb_needs_prev_attn_w:
-                    x, prev_attn_weight = block(
+                    x, attn_weights, moe_loss = block(
                         x, x_cls=None, padding_mask=padding_mask,
                         attn_mask=attn_mask, return_final_attn_weight=True
                     )
@@ -978,10 +1005,11 @@ class ParticleTransformer(nn.Module):
                         attn_weights_list.append(attn_weights.detach().cpu())
                 else:
                     if self.return_qk_final_U_attn_weights:
-                        x, attn_weights = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask, return_final_attn_weight=True)
+                        x, attn_weights, moe_loss = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask, return_final_attn_weight=True)
                         attn_weights_list.append(attn_weights.detach().cpu())
                     else:
-                        x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask)
+                        x, attn_weights, moe_loss = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask)
+                moe_loss_total += moe_loss
 
             # extract class token
             cls_tokens = self.cls_token.expand(1, x.size(1), -1)  # (1, N, C)
@@ -1004,7 +1032,7 @@ class ParticleTransformer(nn.Module):
             # print('isnan:\n', output.isnan().any())
             if self.return_qk_final_U_attn_weights:
                 return output, qk_attn_weights_list, attn_weights_list, attn_mask
-            return output
+            return output, moe_loss_total
 
 
 class ParticleTransformerMultipleRuns(nn.Module):

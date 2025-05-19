@@ -34,9 +34,9 @@ class MoEFFN(nn.Module):
                  # MoE params
                  embed_dim,
                  ffn_dim,
-                 N,
-                 k_shared=0,
-                 m=1,
+                 N=16,
+                 k_shared=1,
+                 m=2,
                  top_k=1,
                  device_count=1,
                  expert_balance_alpha=0.01,
@@ -404,11 +404,31 @@ class EfficientAttention(nn.Module):
 
 class AlteredBlock(nn.Module):
     def __init__(
-            self, embed_dim=128, num_heads=8, ffn_ratio=4,
-            dropout=0.1, attn_dropout=0.1, activation_dropout=0.1,
-            add_bias_kv=False, activation='gelu',
-            attention='classic', input_seq_len=None, lin_proj_dim=None,
-            scale_fc=True, scale_attn=True, scale_heads=True, scale_resids=True
+            self,
+            embed_dim=128,
+            num_heads=8,
+            ffn_ratio=4,
+            dropout=0.1,
+            attn_dropout=0.1,
+            activation_dropout=0.1,
+            add_bias_kv=False,
+            activation='gelu',
+            attention='classic',
+            input_seq_len=None,
+            lin_proj_dim=None,
+            scale_fc=True,
+            scale_attn=True,
+            scale_heads=True,
+            scale_resids=True,
+            # MoE params
+            use_moe=True,
+            N=16,
+            k_shared=1,
+            m=2,
+            top_k=1,
+            device_count=1,
+            expert_balance_alpha=0.01,
+            device_balance_alpha=0.1
         ):
         super().__init__()
 
@@ -426,7 +446,11 @@ class AlteredBlock(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         self.pre_fc_norm = nn.LayerNorm(embed_dim)
-        self.ffn = FFNBlockSection(self.embed_dim, self.ffn_dim, activation, activation_dropout, scale_fc)
+        self.use_moe = use_moe
+        if self.use_moe:
+            self.ffn = MoEFFN(self.embed_dim, self.ffn_dim, N, k_shared, m, top_k, device_count, expert_balance_alpha, device_balance_alpha, activation, activation_dropout, scale_fc)
+        else:
+            self.ffn = FFNBlockSection(self.embed_dim, self.ffn_dim, activation, activation_dropout, scale_fc)
 
         self.c_attn = nn.Parameter(torch.ones(num_heads), requires_grad=True) if scale_heads else None
         self.w_resid = nn.Parameter(torch.ones(embed_dim), requires_grad=True) if scale_resids else None
@@ -504,7 +528,12 @@ class AlteredBlock(nn.Module):
         x = self.pre_fc_norm(x)
 
         # ============ MOE Section ============
-        x = self.ffn(x)
+        if self.use_moe:
+            x, expert_loss, device_loss = self.ffn(x)
+            total_loss = expert_loss + device_loss
+        else:
+            x, _, _ = self.ffn(x)
+            total_loss = torch.tensor(0.0, device=x.device)
         # ============ MOE Section ============
         
         x = self.dropout(x)
@@ -514,7 +543,7 @@ class AlteredBlock(nn.Module):
         # ============ FFN Section ============
 
         if return_final_attn_weight:
-            return x, attn_weight
+            return x, attn_weight, total_loss
         else:
-            return x
+            return x, None, total_loss
 
