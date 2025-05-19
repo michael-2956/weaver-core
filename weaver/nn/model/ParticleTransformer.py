@@ -786,7 +786,7 @@ class ParticleTransformer(nn.Module):
                  N_experts=16,
                  k_shared=1,
                  m=2,
-                 top_k=1,
+                 top_k=2,
                  device_count=1,
                  expert_balance_alpha=0.01,
                  device_balance_alpha=0.1,
