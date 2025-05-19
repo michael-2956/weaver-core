@@ -122,7 +122,7 @@ class MoEFFN(nn.Module):
         topk_vals, topk_idx = torch.topk(gate_probs, self.k_route, dim=-1)  # shapes [T, k_route]
 
         # Initialize output contributions (on flattened tokens)
-        output_flat = torch.zeros_like(x_flat)  # [T, d]
+        output_flat = torch.zeros_like(x_flat, dtype=torch.float16)  # [T, d]
 
         # Always-on shared experts: compute their output for all tokens and add.
         if self.k_shared > 0:
