@@ -63,8 +63,9 @@ class MoEFFN(nn.Module):
         self.num_experts = m * N
         self.expert_dim = math.ceil(ffn_dim / m)
         self.k_shared = m * k_shared
-        self.top_k = self.m * self.top_k                  # total experts used per token (shared + routed)
-        self.k_route = self.top_k - self.k_shared         # number of experts chosen by gating (excluding shared)
+        self.route_experts = self.num_experts - self.k_shared # total experts that can be routed
+        self.top_k = self.m * self.top_k                      # total experts used per token (shared + routed)
+        self.k_route = self.top_k - self.k_shared             # number of experts chosen by gating (excluding shared)
         self.device_count = device_count
         self.expert_balance_alpha = expert_balance_alpha
         self.device_balance_alpha = device_balance_alpha
@@ -82,9 +83,8 @@ class MoEFFN(nn.Module):
         # We'll assign routed experts (indices k_shared ... num_experts-1) evenly to `device_count` groups.
         self.expert_group = []
         if device_count > 1:
-            route_experts = self.k_route  # number of experts that are routed (excluding shared)
-            base = route_experts // device_count
-            extra = route_experts % device_count
+            base = self.route_experts // device_count
+            extra = self.route_experts % device_count
             start_idx = k_shared
             for d in range(device_count):
                 group_size = base + (1 if d < extra else 0)
@@ -164,48 +164,50 @@ class MoEFFN(nn.Module):
             # Add the weighted outputs to the respective token positions in output_flat
             output_flat.index_add_(0, token_batch, expert_out)
 
-        # Add the residual connection (input is added to the output for each token)
-        output_flat = output_flat + x_flat
-        output = output_flat.view(batch_size, seq_len, embed_dim)
+        output = output_flat.view(seq_len, batch_size, embed_dim)
 
         # **Compute Load-Balancing Losses** (expert-level and device-level):
-        # Calculate f_i (fraction of tokens) and p_i (average gate probability) for each routed expert.
-        num_route_experts = self.num_experts - self.k_shared  # N' (routed experts count)
-        # Count how many times each expert index appears in flat_experts (i.e., selected for some token)
-        expert_selection_counts = torch.bincount(flat_experts, minlength=self.num_experts)
-        # We only care about routed experts (shared experts usage is deterministic, exclude them from balance loss)
-        expert_selection_counts = expert_selection_counts[self.k_shared:]  # length N'
-        # Fraction of tokens for expert i: f_i = (N' / (K' * T)) * (#tokens routed to i)
-        K_prime = self.k_route  # number of experts chosen per token (excluding shared)
-        T_float = float(T)
-        f = (num_route_experts / (K_prime * T_float)) * expert_selection_counts.float()  # shape [N']
-        # Average gating probability for expert i: p_i = (1/T) * sum_{t} s_{i,t}
-        # Sum gating probs for each expert over all tokens:
-        total_probs_per_expert = gate_probs.sum(dim=0)  # shape [num_experts]
-        total_probs_per_expert = total_probs_per_expert[self.k_shared:]  # only routed experts
-        p = total_probs_per_expert / T_float  # shape [N']
+        with torch.no_grad():
+            if self.training:
+                # Calculate f_i (fraction of tokens) and p_i (average gate probability) for each routed expert.
+                # Count how many times each expert index appears in flat_experts (i.e., selected for some token)
+                expert_selection_counts = torch.bincount(flat_experts, minlength=self.num_experts)
+                # We only care about routed experts (shared experts usage is deterministic, exclude them from balance loss)
+                expert_selection_counts = expert_selection_counts[self.k_shared:]  # length N'
+                # Fraction of tokens for expert i: f_i = (N' / (K' * T)) * (#tokens routed to i)
+                K_prime = self.k_route  # number of experts chosen per token (excluding shared)
+                T_float = float(T)
+                f = (self.route_experts / (K_prime * T_float)) * expert_selection_counts.float()  # shape [N']
+                # Average gating probability for expert i: p_i = (1/T) * sum_{t} s_{i,t}
+                # Sum gating probs for each expert over all tokens:
+                total_probs_per_expert = gate_probs.sum(dim=0)  # shape [num_experts]
+                total_probs_per_expert = total_probs_per_expert[self.k_shared:]  # only routed experts
+                p = total_probs_per_expert / T_float  # shape [N']
 
-        # Expert-level balance loss: α1 * sum_i f_i * p_i
-        expert_balance_loss = self.expert_balance_alpha * (f * p).sum()
+                # Expert-level balance loss: α1 * sum_i f_i * p_i
+                expert_balance_loss = self.expert_balance_alpha * (f * p).sum()
 
-        # Device-level balance loss: α2 * sum_{device=1..D} f'_d * p'_d
-        if self.device_count > 1:
-            # Compute f'_d and p'_d for each device group
-            f_group = torch.zeros(self.device_count, device=x.device)
-            p_group = torch.zeros(self.device_count, device=x.device)
-            # Sum f and p for experts in each group
-            for d_idx, exp_indices in enumerate(self.expert_group):
-                if len(exp_indices) == 0:
-                    continue
-                # Convert global expert indices to indices in f/p array (subtract k_shared)
-                routed_indices = [j - self.k_shared for j in exp_indices if j >= self.k_shared]
-                if len(routed_indices) == 0:
-                    continue
-                f_group[d_idx] = f[routed_indices].mean()   # average f for group d
-                p_group[d_idx] = p[routed_indices].sum()    # total p for group d
-            device_balance_loss = self.device_balance_alpha * (f_group * p_group).sum()
-        else:
-            device_balance_loss = torch.tensor(0.0, device=x.device)
+                # Device-level balance loss: α2 * sum_{device=1..D} f'_d * p'_d
+                if self.device_count > 1:
+                    # Compute f'_d and p'_d for each device group
+                    f_group = torch.zeros(self.device_count, device=x.device)
+                    p_group = torch.zeros(self.device_count, device=x.device)
+                    # Sum f and p for experts in each group
+                    for d_idx, exp_indices in enumerate(self.expert_group):
+                        if len(exp_indices) == 0:
+                            continue
+                        # Convert global expert indices to indices in f/p array (subtract k_shared)
+                        routed_indices = [j - self.k_shared for j in exp_indices if j >= self.k_shared]
+                        if len(routed_indices) == 0:
+                            continue
+                        f_group[d_idx] = f[routed_indices].mean()   # average f for group d
+                        p_group[d_idx] = p[routed_indices].sum()    # total p for group d
+                    device_balance_loss = self.device_balance_alpha * (f_group * p_group).sum()
+                else:
+                    device_balance_loss = torch.tensor(0.0, device=x.device)
+            else:
+                expert_balance_loss = torch.tensor(0.0, device=x.device)
+                device_balance_loss = torch.tensor(0.0, device=x.device)
 
         return output, expert_balance_loss, device_balance_loss
 
