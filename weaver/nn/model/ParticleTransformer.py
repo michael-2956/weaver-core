@@ -636,12 +636,12 @@ class InteractionTransformer(nn.Module):
                  **kwargs) -> None:
         super().__init__(**kwargs)
 
-        # self.trimmer = SequenceTrimmer(enabled=trim and not for_inference)
+        self.trimmer = SequenceTrimmer(enabled=trim and not for_inference)
         # self.trimmer = SequenceTrimmer(enabled=trim, target=(0.05, 0.051), warmup_steps=0, trim_in_test=True)
-        
-        input_seq_len = 23  # artificially cut
+
+        # input_seq_len = 23  # artificially cut
         # self.trimmer = SequenceTrimmer(enabled=trim, fixed_length=input_seq_len, warmup_steps=0, trim_in_test=True, shuffle_before_cut=True)
-        self.trimmer = SequenceTrimmer(enabled=trim, fixed_length=input_seq_len, warmup_steps=0, trim_in_test=True, shuffle_before_cut=False)
+        # self.trimmer = SequenceTrimmer(enabled=trim, fixed_length=input_seq_len, warmup_steps=0, trim_in_test=True, shuffle_before_cut=False)
 
         self.for_inference = for_inference
         self.use_amp = use_amp
@@ -1043,7 +1043,10 @@ class ParticleTransformer(nn.Module):
                 output = torch.softmax(output, dim=1)
 
             if self.return_qk_final_U_attn_weights:
-                return output, qk_attn_weights_list, attn_weights_list, attn_mask
+                if self.weighted_decode_every_layer:
+                    return output, qk_attn_weights_list, attn_weights_list, attn_mask, x_weights
+                else:
+                    return output, qk_attn_weights_list, attn_weights_list, attn_mask
             return output
 
 
