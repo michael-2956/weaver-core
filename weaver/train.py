@@ -148,6 +148,7 @@ parser.add_argument('--no-mps', action='store_true', default=False,
                     help='do not use mps even if available')
 parser.add_argument('--use-xla', action='store_true', default=False,
                     help='Use an XLA device')
+parser.add_argument('--use-moe', action='store_true', default=False)
 
 
 def to_filelist(args, mode='train'):

@@ -2,6 +2,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.fx.passes.pass_manager import logger
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from linformer_pytorch import LinearAttentionHead, get_EF
@@ -407,6 +408,7 @@ class EfficientAttention(nn.Module):
 class AlteredBlock(nn.Module):
     def __init__(
             self,
+            logger,
             embed_dim=128,
             num_heads=8,
             ffn_ratio=4,
@@ -531,7 +533,9 @@ class AlteredBlock(nn.Module):
 
         # ============ MOE Section ============
         if self.use_moe:
+            logger.info(f'MoE ffn started')
             x, expert_loss, device_loss = self.ffn(x)
+            logger.info(f'MoE ffn ended')
             total_loss = expert_loss + device_loss
         else:
             x, _, _ = self.ffn(x)

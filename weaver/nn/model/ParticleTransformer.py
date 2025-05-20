@@ -661,7 +661,8 @@ class InteractionTransformer(nn.Module):
             attention=attention,
             input_seq_len=input_seq_len_2d,
             lin_proj_dim=lin_proj_dim,
-            scale_fc=True, scale_attn=True, scale_heads=True, scale_resids=True
+            scale_fc=True, scale_attn=True, scale_heads=True, scale_resids=True,
+            logger=_logger
         )
 
         cfg_block = copy.deepcopy(default_cfg)
