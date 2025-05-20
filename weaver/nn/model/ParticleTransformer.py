@@ -666,6 +666,8 @@ class InteractionTransformer(nn.Module):
 
         input_seq_len_2d = input_seq_len**2
 
+        print(f"{input_seq_len_2d = }")
+
         embed_dim = embed_dims[-1] if len(embed_dims) > 0 else interactions_dim
         default_cfg = dict(
             embed_dim=embed_dim, num_heads=num_heads, ffn_ratio=4,
