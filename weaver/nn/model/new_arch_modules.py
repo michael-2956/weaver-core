@@ -27,7 +27,7 @@ class FFNBlockSection(nn.Module):
         if self.post_fc_norm is not None:
             x = self.post_fc_norm(x)
         x = self.fc2(x)
-        return x
+        return x, None, None
 
 class MoEFFN(nn.Module):
     def __init__(self,
@@ -126,7 +126,8 @@ class MoEFFN(nn.Module):
         if self.k_shared > 0:
             # For each shared expert, apply it to all tokens and accumulate
             for j in range(self.k_shared):
-                output_flat += self.experts[j](x_flat)  # every token goes through expert j (shared)
+                res, _, _ = self.experts[j](x_flat)
+                output_flat += res # every token goes through expert j (shared)
 
         # Routed experts: for each token, we have selected expert indices in topk_idx
         # We will gather tokens per expert and apply the expert.
@@ -159,7 +160,7 @@ class MoEFFN(nn.Module):
             token_batch = torch.tensor(same_exp_tokens, device=x.device, dtype=torch.long)
             gate_batch = flat_gates_sorted[same_exp_indices].unsqueeze(1)  # shape [num_tokens_for_exp, 1]
             # Run the expert FFN on all these tokens at once
-            expert_out = self.experts[exp_id](x_flat[token_batch])  # shape [num_tokens_for_exp, d]
+            expert_out, _, _ = self.experts[exp_id](x_flat[token_batch])  # shape [num_tokens_for_exp, d]
             # Multiply outputs by their respective gate weights
             expert_out *= gate_batch  # broadcast multiply each vector by the scalar weight
             # Add the weighted outputs to the respective token positions in output_flat
