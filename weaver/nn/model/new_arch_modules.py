@@ -180,7 +180,7 @@ class MoEFFN(nn.Module):
 
         output = output_flat.view(seq_len, batch_size, embed_dim)
 
-        self.logger.info('Computing losses')
+        # self.logger.info('Computing losses')
         # **Compute Load-Balancing Losses** (expert-level and device-level):
         with torch.no_grad():
             if self.training:
