@@ -82,6 +82,8 @@ class MoEFFN(nn.Module):
             for _ in range(self.num_experts)
         ])
 
+        self.logger = logger
+
         # Define grouping of experts into devices for device-level loss calculation.
         # We'll assign routed experts (indices k_shared ... num_experts-1) evenly to `device_count` groups.
         self.expert_group = []
@@ -124,7 +126,7 @@ class MoEFFN(nn.Module):
         # Initialize output contributions (on flattened tokens)
         output_flat = torch.zeros_like(x_flat, dtype=torch.float16)  # [T, d]
 
-        logger.info('Running shared experts')
+        self.logger.info('Running shared experts')
         # Always-on shared experts: compute their output for all tokens and add.
         if self.k_shared > 0:
             # For each shared expert, apply it to all tokens and accumulate
@@ -132,7 +134,7 @@ class MoEFFN(nn.Module):
                 res, _, _ = self.experts[j](x_flat)
                 output_flat += res # every token goes through expert j (shared)
 
-        logger.info('Sorting and indexing')
+        self.logger.info('Sorting and indexing')
         # Routed experts: for each token, we have selected expert indices in topk_idx
         # We will gather tokens per expert and apply the expert.
         T = x_flat.size(0)
@@ -151,7 +153,7 @@ class MoEFFN(nn.Module):
         # Iterate through sorted lists and batch tokens for each expert
         idx = 0
         n = flat_experts_sorted.numel()
-        logger.info('Running top-k')
+        self.logger.info('Running top-k')
         while idx < n:
             exp_id = int(flat_experts_sorted[idx].item())
             # Gather all tokens for this expert exp_id
@@ -173,7 +175,7 @@ class MoEFFN(nn.Module):
 
         output = output_flat.view(seq_len, batch_size, embed_dim)
 
-        logger.info('Computing losses')
+        self.logger.info('Computing losses')
         # **Compute Load-Balancing Losses** (expert-level and device-level):
         with torch.no_grad():
             if self.training:
@@ -457,7 +459,7 @@ class AlteredBlock(nn.Module):
         self.pre_fc_norm = nn.LayerNorm(embed_dim)
         self.use_moe = use_moe
         if self.use_moe:
-            self.ffn = MoEFFN(self.embed_dim, self.ffn_dim, N, k_shared, m, top_k, device_count, expert_balance_alpha, device_balance_alpha, activation, activation_dropout, scale_fc)
+            self.ffn = MoEFFN(self.embed_dim, self.ffn_dim, logger, N, k_shared, m, top_k, device_count, expert_balance_alpha, device_balance_alpha, activation, activation_dropout, scale_fc)
         else:
             self.ffn = FFNBlockSection(self.embed_dim, self.ffn_dim, activation, activation_dropout, scale_fc)
 
