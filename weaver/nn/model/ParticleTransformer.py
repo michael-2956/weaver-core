@@ -654,6 +654,7 @@ class InteractionTransformer(nn.Module):
                 trim_in_test=True,
                 shuffle_before_cut=(trim_mode == "fixed_shuffle_always")
             )
+            input_seq_len = min(input_seq_len, trim_mode_fixed_length)
         else:
             raise ValueError(f"trim_mode {trim_mode} not supported")
 
