@@ -86,8 +86,8 @@ def train_classification(
                 with profile(activities=[ProfilerActivity.CUDA, ProfilerActivity.CPU]) as prof:
                     with record_function("model_inference"):
                         model_output, moe_loss = model(*inputs)
-                print(prof.key_averages().table(sort_by='cpu_time_total', row_limit=20))
-                print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=20))
+                _logger.info(prof.key_averages().table(sort_by='cpu_time_total', row_limit=20))
+                _logger.info(prof.key_averages().table(sort_by='cuda_time_total', row_limit=20))
                 logits, label, _ = _flatten_preds(model_output, label=label, mask=mask)
                 loss = loss_func(logits, label)
                 loss += moe_loss.item()
