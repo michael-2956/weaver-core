@@ -123,6 +123,7 @@ class MoEFFN(nn.Module):
         # Initialize output contributions (on flattened tokens)
         output_flat = torch.zeros_like(x_flat, dtype=torch.float16)  # [T, d]
 
+
         # Always-on shared experts: compute their output for all tokens and add.
         if self.k_shared > 0:
             # For each shared expert, apply it to all tokens and accumulate

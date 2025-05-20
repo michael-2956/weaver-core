@@ -83,12 +83,7 @@ def train_classification(
                 mask = None
             opt.zero_grad(set_to_none=False)
             with torch.autocast('xla' if dev == 'xla' else 'cuda', enabled=grad_scaler is not None):
-                with profile(activities=[ProfilerActivity.CUDA, ProfilerActivity.CPU],
-                             on_trace_ready=torch.profiler.tensorboard_trace_handler("./profiling"),
-                             schedule=torch.profiler.schedule(wait=0, warmup=0, active=1, repeat=999)) as prof:
-                    with record_function("model_inference"):
-                        model_output, moe_loss = model(*inputs)
-                prof.step()
+                model_output, moe_loss = model(*inputs)
                 logits, label, _ = _flatten_preds(model_output, label=label, mask=mask)
                 loss = loss_func(logits, label)
                 loss += moe_loss.item()
