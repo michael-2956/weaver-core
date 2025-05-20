@@ -150,19 +150,24 @@ class MoEFFN(nn.Module):
         flat_tokens_sorted = flat_tokens[sorted_idx]     # corresponding token indices
         flat_gates_sorted = flat_gates[sorted_idx]       # corresponding gate values
 
+        flat_tokens_sorted_cpu = flat_tokens_sorted.tolist()
+        flat_experts_sorted_cpu = flat_experts_sorted.tolist()
+
         # Iterate through sorted lists and batch tokens for each expert
         idx = 0
         n = flat_experts_sorted.numel()
         self.logger.info('Running top-k')
         while idx < n:
-            exp_id = int(flat_experts_sorted[idx].item())
+            exp_id = flat_experts_sorted_cpu[idx]
             # Gather all tokens for this expert exp_id
             same_exp_indices = []
             same_exp_tokens = []
-            while idx < n and int(flat_experts_sorted[idx].item()) == exp_id:
+            self.logger.info(f'Indexing expert {exp_id}')
+            while idx < n and flat_experts_sorted_cpu[idx] == exp_id:
                 same_exp_indices.append(idx)
-                same_exp_tokens.append(int(flat_tokens_sorted[idx].item()))
+                same_exp_tokens.append(int(flat_tokens_sorted_cpu[idx]))
                 idx += 1
+            self.logger.info(f'Running expert {exp_id}')
             # Convert to tensor
             token_batch = torch.tensor(same_exp_tokens, device=x.device, dtype=torch.long)
             gate_batch = flat_gates_sorted[same_exp_indices].unsqueeze(1)  # shape [num_tokens_for_exp, 1]
