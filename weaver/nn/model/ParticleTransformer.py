@@ -657,13 +657,6 @@ class InteractionTransformer(nn.Module):
         else:
             raise ValueError(f"trim_mode {trim_mode} not supported")
 
-        self.trimmer = SequenceTrimmer(enabled=trim and not for_inference)
-        # self.trimmer = SequenceTrimmer(enabled=trim, target=(0.05, 0.051), warmup_steps=0, trim_in_test=True)
-
-        # input_seq_len = 23  # artificially cut
-        # self.trimmer = SequenceTrimmer(enabled=trim, fixed_length=input_seq_len, warmup_steps=0, trim_in_test=True, shuffle_before_cut=True)
-        # self.trimmer = SequenceTrimmer(enabled=trim, fixed_length=input_seq_len, warmup_steps=0, trim_in_test=True, shuffle_before_cut=False)
-
         self.for_inference = for_inference
         self.use_amp = use_amp
         self.use_xla = use_xla
