@@ -83,11 +83,11 @@ def train_classification(
                 mask = None
             opt.zero_grad(set_to_none=False)
             with torch.autocast('xla' if dev == 'xla' else 'cuda', enabled=grad_scaler is not None):
-                with profile(activities=[ProfilerActivity.CUDA, ProfilerActivity.CPU], record_shapes=True) as prof:
+                with profile(activities=[ProfilerActivity.CUDA, ProfilerActivity.CPU]) as prof:
                     with record_function("model_inference"):
                         model_output, moe_loss = model(*inputs)
-                print(prof.key_averages().table(sort_by='cpu_time_total', row_limit=50))
-                print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=50))
+                print(prof.key_averages().table(sort_by='cpu_time_total', row_limit=20))
+                print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=20))
                 logits, label, _ = _flatten_preds(model_output, label=label, mask=mask)
                 loss = loss_func(logits, label)
                 loss += moe_loss.item()
