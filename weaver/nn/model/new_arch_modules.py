@@ -126,7 +126,7 @@ class MoEFFN(nn.Module):
         # Initialize output contributions (on flattened tokens)
         output_flat = torch.zeros_like(x_flat, dtype=torch.float16)  # [T, d]
 
-        self.logger.info('Running shared experts')
+        # self.logger.info('Running shared experts')
         # Always-on shared experts: compute their output for all tokens and add.
         if self.k_shared > 0:
             # For each shared expert, apply it to all tokens and accumulate
@@ -134,7 +134,7 @@ class MoEFFN(nn.Module):
                 res, _, _ = self.experts[j](x_flat)
                 output_flat += res # every token goes through expert j (shared)
 
-        self.logger.info('Sorting and indexing')
+        # self.logger.info('Sorting and indexing')
         # Routed experts: for each token, we have selected expert indices in topk_idx
         # We will gather tokens per expert and apply the expert.
         T = x_flat.size(0)
@@ -156,18 +156,18 @@ class MoEFFN(nn.Module):
         # Iterate through sorted lists and batch tokens for each expert
         idx = 0
         n = flat_experts_sorted.numel()
-        self.logger.info('Running top-k')
+        # self.logger.info('Running top-k')
         while idx < n:
             exp_id = flat_experts_sorted_cpu[idx]
             # Gather all tokens for this expert exp_id
             same_exp_indices = []
             same_exp_tokens = []
-            self.logger.info(f'Indexing expert {exp_id}')
+            # self.logger.info(f'Indexing expert {exp_id}')
             while idx < n and flat_experts_sorted_cpu[idx] == exp_id:
                 same_exp_indices.append(idx)
                 same_exp_tokens.append(int(flat_tokens_sorted_cpu[idx]))
                 idx += 1
-            self.logger.info(f'Running expert {exp_id}')
+            # self.logger.info(f'Running expert {exp_id}')
             # Convert to tensor
             token_batch = torch.tensor(same_exp_tokens, device=x.device, dtype=torch.long)
             gate_batch = flat_gates_sorted[same_exp_indices].unsqueeze(1)  # shape [num_tokens_for_exp, 1]
@@ -545,9 +545,9 @@ class AlteredBlock(nn.Module):
 
         # ============ MOE Section ============
         if self.use_moe:
-            logger.info(f'MoE ffn started')
+            # logger.info(f'MoE ffn started')
             x, expert_loss, device_loss = self.ffn(x)
-            logger.info(f'MoE ffn ended')
+            # logger.info(f'MoE ffn ended')
             total_loss = expert_loss + device_loss
         else:
             x, _, _ = self.ffn(x)
