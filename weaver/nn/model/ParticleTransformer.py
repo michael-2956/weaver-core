@@ -782,7 +782,7 @@ class ParticleTransformer(nn.Module):
                  add_sink_token=False,
                  uniformly_add_nblocks=None,
                  # MoE params
-                 use_moe=True,
+                 use_moe=False,
                  N_experts=16,
                  k_shared=1,
                  m=2,
