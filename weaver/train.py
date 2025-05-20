@@ -500,6 +500,13 @@ def optim(args, model, device):
             **optimizer_options
         )
 
+        for p in model.parameters():
+            if p.requires_grad:
+                p.grad = torch.zeros_like(p)
+
+        opt.step()
+        opt.zero_grad(set_to_none=False)
+
     # load previous training and resume if `--load-epoch` is set
     if args.load_epoch is not None:
         _logger.info('Resume training from epoch %d' % args.load_epoch)

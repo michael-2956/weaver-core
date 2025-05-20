@@ -77,7 +77,7 @@ def train_classification(
                 mask = y[data_config.label_names[0] + '_mask'].bool().to(dev)
             except KeyError:
                 mask = None
-            opt.zero_grad()
+            opt.zero_grad(set_to_none=False)
             with torch.autocast('xla' if dev == 'xla' else 'cuda', enabled=grad_scaler is not None):
                 model_output, moe_loss = model(*inputs)
                 logits, label, _ = _flatten_preds(model_output, label=label, mask=mask)
@@ -341,7 +341,7 @@ def train_regression(
             label = y[data_config.label_names[0]].float()
             num_examples = label.shape[0]
             label = label.to(dev)
-            opt.zero_grad()
+            opt.zero_grad(set_to_none=False)
             with torch.autocast('xla' if dev == 'xla' else 'cuda', enabled=grad_scaler is not None):
                 model_output = model(*inputs)
                 preds = model_output.squeeze()

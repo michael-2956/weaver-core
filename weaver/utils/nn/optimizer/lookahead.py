@@ -54,7 +54,7 @@ class Lookahead(Optimizer):
         }
 
     def zero_grad(self):
-        self.optimizer.zero_grad()
+        self.optimizer.zero_grad(set_to_none=False)
 
     def state_dict(self):
         return self.optimizer.state_dict()

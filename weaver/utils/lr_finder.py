@@ -260,7 +260,7 @@ class LRFinder(object):
         self.model.train()
         total_loss = None  # for late initialization
 
-        self.optimizer.zero_grad()
+        self.optimizer.zero_grad(set_to_none=False)
         for i in range(accumulation_steps):
             inputs, labels = iter_wrapper.get_batch()
             inputs, labels = self._move_to_device(inputs, labels)
