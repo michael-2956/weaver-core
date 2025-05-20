@@ -1,3 +1,5 @@
+from venv import logger
+
 import numpy as np
 import awkward as ak
 import tqdm
@@ -67,6 +69,7 @@ def train_classification(
     if dev == 'xla':
         import torch_xla
 
+    i = 0
     with tqdm.tqdm(train_loader, mininterval=1) as tq:
         for X, y, _ in tq:
           with (torch_xla.step() if dev == 'xla' else contextlib.nullcontext()):
@@ -79,10 +82,13 @@ def train_classification(
                 mask = None
             opt.zero_grad(set_to_none=False)
             with torch.autocast('xla' if dev == 'xla' else 'cuda', enabled=grad_scaler is not None):
+                _logger.info(f'calling model for iter {i}')
                 model_output, moe_loss = model(*inputs)
+                _logger.info(f'obtained model results for iter {i}')
                 logits, label, _ = _flatten_preds(model_output, label=label, mask=mask)
                 loss = loss_func(logits, label)
                 loss += moe_loss.item()
+                i += 1
             if grad_scaler is None:
                 loss.backward()
                 opt.step()
