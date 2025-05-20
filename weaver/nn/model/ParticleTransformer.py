@@ -853,7 +853,8 @@ class ParticleTransformer(nn.Module):
                            top_k=top_k,
                            device_count=device_count,
                            expert_balance_alpha=expert_balance_alpha,
-                           device_balance_alpha=device_balance_alpha
+                           device_balance_alpha=device_balance_alpha,
+                           logger=_logger
                            )
 
         cfg_block = copy.deepcopy(default_cfg)
