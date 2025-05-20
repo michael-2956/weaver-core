@@ -630,11 +630,32 @@ class InteractionTransformer(nn.Module):
                  lin_proj_dim=128,
                  # misc
                  trim=True,
+                 trim_mode="random_cutoff_in_train",
+                 trim_mode_fixed_length=None,
+                 trim_random_cutoff_range=(0.9, 1.02),
                  for_inference=False,
                  use_amp=False,
                  use_xla=False,
                  **kwargs) -> None:
         super().__init__(**kwargs)
+
+        if trim_mode in ["random_cutoff_in_train", "random_cutoff_always"]:
+            self.trimmer = SequenceTrimmer(
+                enabled=trim and not for_inference,
+                target=trim_random_cutoff_range,
+                trim_in_test=(trim_mode == "random_cutoff_always")
+            )
+        elif trim_mode in ["fixed_shuffle_always", "fixed_noshuffle_always"]:
+            assert trim_mode_fixed_length is not None
+            self.trimmer = SequenceTrimmer(
+                enabled=trim,
+                fixed_length=trim_mode_fixed_length,
+                warmup_steps=0,
+                trim_in_test=True,
+                shuffle_before_cut=(trim_mode == "fixed_shuffle_always")
+            )
+        else:
+            raise ValueError(f"trim_mode {trim_mode} not supported")
 
         self.trimmer = SequenceTrimmer(enabled=trim and not for_inference)
         # self.trimmer = SequenceTrimmer(enabled=trim, target=(0.05, 0.051), warmup_steps=0, trim_in_test=True)
@@ -792,7 +813,7 @@ class ParticleTransformer(nn.Module):
                  **kwargs) -> None:
         super().__init__(**kwargs)
 
-        if trim_mode == "random_cutoff_in_train":
+        if trim_mode in ["random_cutoff_in_train", "random_cutoff_always"]:
             self.trimmer = SequenceTrimmer(
                 enabled=trim and not for_inference,
                 target=trim_random_cutoff_range,
