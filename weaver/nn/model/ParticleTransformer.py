@@ -9,6 +9,7 @@ import copy
 import torch
 import torch.nn as nn
 from functools import partial
+import torch.nn.functional as F
 
 from weaver.utils.logger import _logger
 
@@ -809,6 +810,7 @@ class ParticleTransformer(nn.Module):
                  uniformly_add_nblocks=None,
                  # uses cls_block_params & num_cls_layers & identical_attn_weights
                  weighted_decode_every_layer=False,
+                 weighted_decode_softmax_mode="softmax",  # accepts softmax, gumbel_softmax
                  # misc
                  trim=True,
                  trim_mode="random_cutoff_in_train",
@@ -847,6 +849,10 @@ class ParticleTransformer(nn.Module):
         self.return_qk_final_U_attn_weights = return_qk_final_U_attn_weights
         self.uniformly_add_nblocks = uniformly_add_nblocks
         self.weighted_decode_every_layer = weighted_decode_every_layer
+
+        if weighted_decode_every_layer:
+            assert weighted_decode_softmax_mode in ["softmax", "gumbel_softmax"]
+            self.weighted_decode_softmax_mode = weighted_decode_softmax_mode
 
         if uniformly_add_nblocks is not None:
             assert identical_attn_weights  # other can be implemented if need be
@@ -1057,7 +1063,15 @@ class ParticleTransformer(nn.Module):
 
             if self.weighted_decode_every_layer:
                 x_weights = torch.cat(x_weights, dim=1)  # (B, num_blocks)
-                x_weights = torch.softmax(x_weights, dim=1)  # (B, num_blocks)
+                if self.weighted_decode_softmax_mode == "softmax":
+                    x_weights = torch.softmax(x_weights, dim=1)  # (B, num_blocks)
+                elif self.weighted_decode_softmax_mode == "gumbel_softmax":
+                    x_weights_soft = F.softmax(x_weights, dim=1)  # (B, num_blocks)
+                    _, idx = x_weights_soft.max(dim=1)
+                    x_weights_hard = F.one_hot(idx, num_blocks).float()  # (B, num_blocks)
+                    # this way loss is calculated based on x_hard,
+                    # but backward-prop uses gradient from x_soft
+                    x_weights = (x_weights_hard - x_weights_soft).detach() + x_weights_soft
                 outputs = torch.stack(outputs)  # (num_blocks, B, num_classes)
                 output = torch.einsum('bn,nbc->bc', x_weights, outputs)  # (B, num_classes)
             else:
