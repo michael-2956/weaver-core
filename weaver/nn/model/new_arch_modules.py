@@ -79,12 +79,17 @@ class MoEFFN(nn.Module):
 
         # Gating network: a linear layer that outputs a score for each expert.
         # (Bias is allowed; it can learn an offset for each expert's logit.)
-        self.gate = nn.Linear(embed_dim, self.num_experts)
+        self.gate = nn.Linear(embed_dim, self.route_experts)
 
         # Expert networks: Each expert is a two-layer feed-forward (FFN) with GELU.
+        self.shared_experts = nn.ModuleList([
+            FFNBlockSection(embed_dim, self.expert_dim, activation, activation_dropout, scale_fc)
+            for _ in range(self.k_shared)
+        ])
+        
         self.experts = nn.ModuleList([
             FFNBlockSection(embed_dim, self.expert_dim, activation, activation_dropout, scale_fc)
-            for _ in range(self.num_experts)
+            for _ in range(self.route_experts)
         ])
 
         self.logger = logger
@@ -120,8 +125,6 @@ class MoEFFN(nn.Module):
         # Compute gating scores for all experts
         gate_scores = self.gate(x_flat)  # shape [T, num_experts]
         # Exclude shared experts from routing selection by masking their scores (they will be added deterministically)
-        if self.k_shared > 0:
-            gate_scores[:, :self.k_shared] = -1e4  # a very large negative value to effectively zero out softmax for shared idx
         # Compute softmax probabilities for gating (over all experts, shared ones effectively ~0 after masking)
         gate_probs = torch.softmax(gate_scores, dim=-1)  # shape [T, num_experts]
 
@@ -135,13 +138,12 @@ class MoEFFN(nn.Module):
         if log_verbose:
             self.logger.info('Running shared experts')
         # Always-on shared experts: compute their output for all tokens and add.
-        if self.k_shared > 0:
-            # For each shared expert, apply it to all tokens and accumulate
-            for j in range(self.k_shared):
-                res, _, _ = self.experts[j](x_flat)
-                output_flat += res # every token goes through expert j (shared)
+        for expert in self.shared_experts:
+            res, _, _ = expert(x_flat)
+            output_flat += res
 
-        # self.logger.info('Sorting and indexing')
+        if log_verbose:
+            self.logger.info('Sorting and indexing')
         # Routed experts: for each token, we have selected expert indices in topk_idx
         # We will gather tokens per expert and apply the expert.
         T = x_flat.size(0)
@@ -170,7 +172,6 @@ class MoEFFN(nn.Module):
         if log_verbose:
             self.logger.info('Running top-k')
         for expert_idx in expert_idxs_cpu:
-            # Convert to tensor
             expert_index_set = expert_indices[expert_idx]
             gate_batch = flat_gates_sorted[expert_index_set].unsqueeze(1)  # shape [num_tokens_for_exp, 1]
             # Run the expert FFN on all these tokens at once
@@ -191,7 +192,7 @@ class MoEFFN(nn.Module):
             # Count how many times each expert index appears in flat_experts (i.e., selected for some token)
             expert_selection_counts = torch.bincount(flat_experts, minlength=self.num_experts)
             # We only care about routed experts (shared experts usage is deterministic, exclude them from balance loss)
-            expert_selection_counts = expert_selection_counts[self.k_shared:]  # length N'
+            expert_selection_counts = expert_selection_counts
             # Fraction of tokens for expert i: f_i = (N' / (K' * T)) * (#tokens routed to i)
             K_prime = self.k_route_tensor  # number of experts chosen per token (excluding shared)
             T_float = T_float_tensor
@@ -199,7 +200,7 @@ class MoEFFN(nn.Module):
             # Average gating probability for expert i: p_i = (1/T) * sum_{t} s_{i,t}
             # Sum gating probs for each expert over all tokens:
             total_probs_per_expert = gate_probs.sum(dim=0)  # shape [num_experts]
-            total_probs_per_expert = total_probs_per_expert[self.k_shared:]  # only routed experts
+            total_probs_per_expert = total_probs_per_expert
             p = total_probs_per_expert / T_float  # shape [N']
 
             # Expert-level balance loss: α1 * sum_i f_i * p_i
