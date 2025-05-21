@@ -810,7 +810,7 @@ class ParticleTransformer(nn.Module):
                  uniformly_add_nblocks=None,
                  # uses cls_block_params & num_cls_layers & identical_attn_weights
                  weighted_decode_every_layer=False,
-                 weighted_decode_softmax_mode="softmax",  # accepts softmax, gumbel_softmax
+                 weighted_decode_softmax_mode="softmax",  # accepts softmax, gumbel_softmax, gumbel_softmax_sample
                  # misc
                  trim=True,
                  trim_mode="random_cutoff_in_train",
@@ -851,7 +851,7 @@ class ParticleTransformer(nn.Module):
         self.weighted_decode_every_layer = weighted_decode_every_layer
 
         if weighted_decode_every_layer:
-            assert weighted_decode_softmax_mode in ["softmax", "gumbel_softmax"]
+            assert weighted_decode_softmax_mode in ["softmax", "gumbel_softmax", "gumbel_softmax_sample"]
             self.weighted_decode_softmax_mode = weighted_decode_softmax_mode
 
         if uniformly_add_nblocks is not None:
@@ -1067,7 +1067,10 @@ class ParticleTransformer(nn.Module):
                     x_weights = torch.softmax(x_weights, dim=1)  # (B, num_blocks)
                 elif self.weighted_decode_softmax_mode == "gumbel_softmax":
                     x_weights_soft = F.softmax(x_weights, dim=1)  # (B, num_blocks)
-                    _, idx = x_weights_soft.max(dim=1)
+                    if self.weighted_decode_softmax_mode == "gumbel_softmax_sample" and self.training:
+                        idx = torch.multinomial(x_weights_soft, num_samples=1).squeeze(1)
+                    else:
+                        _, idx = x_weights_soft.max(dim=1)
                     x_weights_hard = F.one_hot(idx, num_blocks).float()  # (B, num_blocks)
                     # this way loss is calculated based on x_hard,
                     # but backward-prop uses gradient from x_soft
@@ -1086,7 +1089,7 @@ class ParticleTransformer(nn.Module):
 
             if self.return_qk_final_U_attn_weights:
                 if self.weighted_decode_every_layer:
-                    return output, qk_attn_weights_list, attn_weights_list, attn_mask, x_weights
+                    return output, qk_attn_weights_list, attn_weights_list, attn_mask, x_weights, outputs
                 else:
                     return output, qk_attn_weights_list, attn_weights_list, attn_mask
             return output
