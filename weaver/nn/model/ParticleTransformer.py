@@ -1065,7 +1065,7 @@ class ParticleTransformer(nn.Module):
                 x_weights = torch.cat(x_weights, dim=1)  # (B, num_blocks)
                 if self.weighted_decode_softmax_mode == "softmax":
                     x_weights = torch.softmax(x_weights, dim=1)  # (B, num_blocks)
-                elif self.weighted_decode_softmax_mode == "gumbel_softmax":
+                elif self.weighted_decode_softmax_mode in ["gumbel_softmax", "gumbel_softmax_sample"]:
                     x_weights_soft = F.softmax(x_weights, dim=1)  # (B, num_blocks)
                     if self.weighted_decode_softmax_mode == "gumbel_softmax_sample" and self.training:
                         idx = torch.multinomial(x_weights_soft, num_samples=1).squeeze(1)
