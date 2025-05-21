@@ -88,6 +88,8 @@ def train_classification(
                 loss = loss_func(logits, label)
                 loss += moe_loss.item()
                 i += 1
+                if i == 10:
+                    break
             if grad_scaler is None:
                 loss.backward()
                 opt.step()
@@ -163,6 +165,7 @@ def evaluate_classification(model, test_loader, dev, epoch, for_training=True, l
                             eval_metrics=['roc_auc_score', 'roc_auc_score_matrix', 'confusion_matrix'],
                             tb_helper=None):
     model.eval()
+    return 
 
     data_config = test_loader.dataset.config
 
