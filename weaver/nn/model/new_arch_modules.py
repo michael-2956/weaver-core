@@ -1,4 +1,6 @@
 import math
+from collections import defaultdict
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -116,7 +118,7 @@ class MoEFFN(nn.Module):
         gate_scores = self.gate(x_flat)  # shape [T, num_experts]
         # Exclude shared experts from routing selection by masking their scores (they will be added deterministically)
         if self.k_shared > 0:
-            gate_scores[:, :self.k_shared] = -1e4  # a very large negative value to effectively zero out softmax for shared idx
+            gate_scores[:, :self.k_shared] = torch.finfo(x.dtype).min  # a very large negative value to effectively zero out softmax for shared idx
         # Compute softmax probabilities for gating (over all experts, shared ones effectively ~0 after masking)
         gate_probs = torch.softmax(gate_scores, dim=-1)  # shape [T, num_experts]
 
@@ -151,36 +153,29 @@ class MoEFFN(nn.Module):
         flat_experts_sorted = flat_experts[sorted_idx]   # sorted expert indices
         flat_tokens_sorted = flat_tokens[sorted_idx]     # corresponding token indices
         flat_gates_sorted = flat_gates[sorted_idx]       # corresponding gate values
-
-        flat_tokens_sorted_cpu = flat_tokens_sorted.tolist()
-        flat_experts_sorted_cpu = flat_experts_sorted.tolist()
-
-        # Iterate through sorted lists and batch tokens for each expert
-        idx = 0
-        n = flat_experts_sorted.numel()
+        
+        expert_idxs, expert_token_counts = torch.unique_consecutive(flat_experts_sorted, return_counts=True)
+        boundaries = torch.cumsum(expert_token_counts, dim=0)
+        expert_idxs_cpu, boundaries_cpu = expert_idxs.to('cpu'), boundaries.to('cpu')
+        expert_indices = {}       # jagged list of token idxs for each expert
+        left = 0
+        for i, expert_idx in enumerate(expert_idxs_cpu):
+            right = boundaries_cpu[i]
+            expert_indices[expert_idx] = flat_tokens_sorted[left:right]
+            left = right
+        
         if log_verbose:
             self.logger.info('Running top-k')
-        while idx < n:
-            exp_id = flat_experts_sorted_cpu[idx]
-            # Gather all tokens for this expert exp_id
-            same_exp_indices = []
-            same_exp_tokens = []
-            # self.logger.info(f'Indexing expert {exp_id}')
-            while idx < n and flat_experts_sorted_cpu[idx] == exp_id:
-                same_exp_indices.append(idx)
-                same_exp_tokens.append(int(flat_tokens_sorted_cpu[idx]))
-                idx += 1
-            if log_verbose:
-                self.logger.info(f'Running expert {exp_id}')
+        for expert_idx in expert_idxs_cpu:
             # Convert to tensor
-            token_batch = torch.tensor(same_exp_tokens, device=x.device, dtype=torch.long)
-            gate_batch = flat_gates_sorted[same_exp_indices].unsqueeze(1)  # shape [num_tokens_for_exp, 1]
+            expert_index_set = expert_indices[expert_idx]
+            gate_batch = flat_gates_sorted[expert_index_set].unsqueeze(1)  # shape [num_tokens_for_exp, 1]
             # Run the expert FFN on all these tokens at once
-            expert_out, _, _ = self.experts[exp_id](x_flat[token_batch])  # shape [num_tokens_for_exp, d]
+            expert_out, _, _ = self.experts[expert_idx](x_flat[expert_index_set])  # shape [num_tokens_for_exp, d]
             # Multiply outputs by their respective gate weights
             expert_out *= gate_batch  # broadcast multiply each vector by the scalar weight
             # Add the weighted outputs to the respective token positions in output_flat
-            output_flat.index_add_(0, token_batch, expert_out)
+            output_flat.index_add_(0, expert_index_set, expert_out)
 
         output = output_flat.view(seq_len, batch_size, embed_dim)
 
