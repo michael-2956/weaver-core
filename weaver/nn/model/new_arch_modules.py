@@ -112,7 +112,7 @@ class MoEFFN(nn.Module):
         Forward pass of MoE block.
         Returns a tuple: (output, expert_balance_loss, device_balance_loss)
         """
-        log_verbose = True
+        log_verbose = False
         seq_len, batch_size, embed_dim = x.size()
         # Flatten batch and sequence into one dimension for routing
         x_flat = x.reshape(batch_size * seq_len, embed_dim)  # shape [T, d] where T = batch_size * seq_len
