@@ -625,6 +625,7 @@ class InteractionTransformer(nn.Module):
                  block_params=None,
                  cls_block_params={'dropout': 0, 'attn_dropout': 0, 'activation_dropout': 0},
                  fc_params=[],
+                 identical_attn_weights=False,
                  activation='gelu',
                  attention='linformer',
                  lin_proj_dim=128,
@@ -661,6 +662,7 @@ class InteractionTransformer(nn.Module):
         self.for_inference = for_inference
         self.use_amp = use_amp
         self.use_xla = use_xla
+        self.identical_attn_weights = identical_attn_weights
 
         self.interactions_dim = interactions_dim
 
@@ -701,9 +703,16 @@ class InteractionTransformer(nn.Module):
         )
 
         self.embed = Embed(interactions_dim, embed_dims, activation=activation) if len(embed_dims) > 0 else nn.Identity()
-        
-        self.blocks = nn.ModuleList([AlteredBlock(**cfg_block) for _ in range(num_layers)])
-        self.cls_blocks = nn.ModuleList([AlteredBlock(**cfg_cls_block) for _ in range(num_cls_layers)])
+
+        self.num_layers = num_layers
+        self.num_cls_layers = num_cls_layers
+        if identical_attn_weights:
+            self.blocks = nn.ModuleList([AlteredBlock(**cfg_block) for _ in range(1)])
+            self.cls_blocks = nn.ModuleList([AlteredBlock(**cfg_cls_block) for _ in range(1)])
+        else:
+            self.blocks = nn.ModuleList([AlteredBlock(**cfg_block) for _ in range(num_layers)])
+            self.cls_blocks = nn.ModuleList([AlteredBlock(**cfg_cls_block) for _ in range(num_cls_layers)])
+
         self.norm = nn.LayerNorm(embed_dim)
 
         if fc_params is not None:
@@ -750,13 +759,15 @@ class InteractionTransformer(nn.Module):
             # input embedding
             x = self.embed(x_pair)  # (P*P, N, interactions_dim)
             
-            for block in self.blocks:
-                x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=None)
+            for i in range(self.num_layers):
+                bi = 0 if self.identical_attn_weights else i
+                x = self.blocks[bi](x, x_cls=None, padding_mask=padding_mask, attn_mask=None)
 
             # extract class token
             cls_tokens = self.cls_token.expand(1, x.size(1), -1)  # (1, N, C)
-            for block in self.cls_blocks:
-                cls_tokens = block(x, x_cls=cls_tokens, padding_mask=padding_mask, attn_mask=None)
+            for i in range(self.num_cls_layers):
+                bi = 0 if self.identical_attn_weights else i
+                cls_tokens = self.cls_blocks[bi](x, x_cls=cls_tokens, padding_mask=padding_mask, attn_mask=None)
 
             x_cls = self.norm(cls_tokens).squeeze(0)
 
