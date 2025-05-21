@@ -107,6 +107,7 @@ class MoEFFN(nn.Module):
         Forward pass of MoE block.
         Returns a tuple: (output, expert_balance_loss, device_balance_loss)
         """
+        log_verbose = True
         seq_len, batch_size, embed_dim = x.size()
         # Flatten batch and sequence into one dimension for routing
         x_flat = x.reshape(batch_size * seq_len, embed_dim)  # shape [T, d] where T = batch_size * seq_len
@@ -125,8 +126,9 @@ class MoEFFN(nn.Module):
 
         # Initialize output contributions (on flattened tokens)
         output_flat = torch.zeros_like(x_flat, dtype=torch.float16)  # [T, d]
-
-        self.logger.info('Running shared experts')
+        
+        if log_verbose:
+            self.logger.info('Running shared experts')
         # Always-on shared experts: compute their output for all tokens and add.
         if self.k_shared > 0:
             # For each shared expert, apply it to all tokens and accumulate
@@ -156,7 +158,8 @@ class MoEFFN(nn.Module):
         # Iterate through sorted lists and batch tokens for each expert
         idx = 0
         n = flat_experts_sorted.numel()
-        self.logger.info('Running top-k')
+        if log_verbose:
+            self.logger.info('Running top-k')
         while idx < n:
             exp_id = flat_experts_sorted_cpu[idx]
             # Gather all tokens for this expert exp_id
@@ -167,7 +170,8 @@ class MoEFFN(nn.Module):
                 same_exp_indices.append(idx)
                 same_exp_tokens.append(int(flat_tokens_sorted_cpu[idx]))
                 idx += 1
-            self.logger.info(f'Running expert {exp_id}')
+            if log_verbose:
+                self.logger.info(f'Running expert {exp_id}')
             # Convert to tensor
             token_batch = torch.tensor(same_exp_tokens, device=x.device, dtype=torch.long)
             gate_batch = flat_gates_sorted[same_exp_indices].unsqueeze(1)  # shape [num_tokens_for_exp, 1]
@@ -180,7 +184,8 @@ class MoEFFN(nn.Module):
 
         output = output_flat.view(seq_len, batch_size, embed_dim)
 
-        self.logger.info('Computing losses')
+        if log_verbose:
+            self.logger.info('Computing losses')
         # **Compute Load-Balancing Losses** (expert-level and device-level):
         with torch.no_grad():
             if self.training:
