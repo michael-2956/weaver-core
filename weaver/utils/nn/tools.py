@@ -88,8 +88,6 @@ def train_classification(
                 loss = loss_func(logits, label)
                 loss += moe_loss
                 i += 1
-                if i == 10:
-                    break
             if grad_scaler is None:
                 loss.backward()
                 opt.step()
