@@ -159,7 +159,7 @@ class MoEFFN(nn.Module):
         
         expert_idxs, expert_token_counts = torch.unique_consecutive(flat_experts_sorted, return_counts=True)
         boundaries = torch.cumsum(expert_token_counts, dim=0)
-        expert_idxs_cpu, boundaries_cpu = expert_idxs.to('cpu'), boundaries.to('cpu')
+        expert_idxs_cpu, boundaries_cpu = expert_idxs.tolist(), boundaries.tolist()
         expert_indices = {}       # jagged list of token idxs for each expert
         left = 0
         for i, expert_idx in enumerate(expert_idxs_cpu):
