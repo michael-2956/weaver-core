@@ -86,7 +86,7 @@ def train_classification(
                 model_output, moe_loss = model(*inputs)
                 logits, label, _ = _flatten_preds(model_output, label=label, mask=mask)
                 loss = loss_func(logits, label)
-                loss += moe_loss.item()
+                loss += moe_loss
                 i += 1
                 if i == 10:
                     break
