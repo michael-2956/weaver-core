@@ -187,12 +187,23 @@ class MoEFFN(nn.Module):
         # **Compute Load-Balancing Losses** (expert-level and device-level):
         T_float_tensor = torch.tensor(T, device='cuda', dtype=torch.float)
         if self.training:
-            expert_selection_counts = torch.bincount(flat_experts, minlength=self.num_experts)[self.k_shared:].float()
-            total_probs_per_expert = gate_probs.sum(dim=0)[self.k_shared:]
-            prod = (expert_selection_counts * total_probs_per_expert).sum()
-            scale = self.route_experts_tensor / self.k_route_tensor / T_float_tensor / T_float_tensor
-            prod = prod * scale
-            expert_balance_loss = self.expert_balance_alpha_tensor * prod
+            # Calculate f_i (fraction of tokens) and p_i (average gate probability) for each routed expert.
+            # Count how many times each expert index appears in flat_experts (i.e., selected for some token)
+            expert_selection_counts = torch.bincount(flat_experts, minlength=self.num_experts)
+            # We only care about routed experts (shared experts usage is deterministic, exclude them from balance loss)
+            expert_selection_counts = expert_selection_counts[self.k_shared:]  # length N'
+            # Fraction of tokens for expert i: f_i = (N' / (K' * T)) * (#tokens routed to i)
+            K_prime = self.k_route_tensor  # number of experts chosen per token (excluding shared)
+            T_float = T_float_tensor
+            f = (self.route_experts_tensor / (K_prime * T_float)) * expert_selection_counts.float()  # shape [N']
+            # Average gating probability for expert i: p_i = (1/T) * sum_{t} s_{i,t}
+            # Sum gating probs for each expert over all tokens:
+            total_probs_per_expert = gate_probs.sum(dim=0)  # shape [num_experts]
+            total_probs_per_expert = total_probs_per_expert[self.k_shared:]  # only routed experts
+            p = total_probs_per_expert / T_float  # shape [N']
+
+            # Expert-level balance loss: α1 * sum_i f_i * p_i
+            expert_balance_loss = self.expert_balance_alpha_tensor * (f * p).sum()
 
             # Device-level balance loss: α2 * sum_{device=1..D} f'_d * p'_d
             if self.device_count > 1:
