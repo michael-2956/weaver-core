@@ -190,7 +190,7 @@ class MoEFFN(nn.Module):
         if self.training:
             # Calculate f_i (fraction of tokens) and p_i (average gate probability) for each routed expert.
             # Count how many times each expert index appears in flat_experts (i.e., selected for some token)
-            expert_selection_counts = torch.bincount(flat_experts, minlength=self.k_route)
+            expert_selection_counts = torch.bincount(flat_experts, minlength=self.route_experts)
             # We only care about routed experts (shared experts usage is deterministic, exclude them from balance loss)
             expert_selection_counts = expert_selection_counts
             # Fraction of tokens for expert i: f_i = (N' / (K' * T)) * (#tokens routed to i)
