@@ -163,7 +163,6 @@ def evaluate_classification(model, test_loader, dev, epoch, for_training=True, l
                             eval_metrics=['roc_auc_score', 'roc_auc_score_matrix', 'confusion_matrix'],
                             tb_helper=None):
     model.eval()
-    return 
 
     data_config = test_loader.dataset.config
 
