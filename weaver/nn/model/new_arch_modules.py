@@ -121,7 +121,7 @@ class MoEFFN(nn.Module):
         gate_scores = self.gate(x_flat)  # shape [T, num_experts]
         # Exclude shared experts from routing selection by masking their scores (they will be added deterministically)
         if self.k_shared > 0:
-            gate_scores[:, :self.k_shared] = torch.finfo(x.dtype).min  # a very large negative value to effectively zero out softmax for shared idx
+            gate_scores[:, :self.k_shared] = -1e4  # a very large negative value to effectively zero out softmax for shared idx
         # Compute softmax probabilities for gating (over all experts, shared ones effectively ~0 after masking)
         gate_probs = torch.softmax(gate_scores, dim=-1)  # shape [T, num_experts]
 
