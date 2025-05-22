@@ -71,73 +71,91 @@ def train_classification(
         import torch_xla
 
     i = 0
-    with tqdm.tqdm(train_loader, mininterval=1) as tq:
-        for X, y, _ in tq:
-          with (torch_xla.step() if dev == 'xla' else contextlib.nullcontext()):
-            inputs = [X[k].to(dev) for k in data_config.input_names]
-            label = y[data_config.label_names[0]].long().to(dev)
-            entry_count += label.shape[0]
-            try:
-                mask = y[data_config.label_names[0] + '_mask'].bool().to(dev)
-            except KeyError:
-                mask = None
-            opt.zero_grad(set_to_none=False)
-            with torch.autocast('xla' if dev == 'xla' else 'cuda', enabled=grad_scaler is not None):
-                model_output, moe_loss = model(*inputs)
-                logits, label, _ = _flatten_preds(model_output, label=label, mask=mask)
-                loss = loss_func(logits, label)
-                loss += moe_loss
-                i += 1
-            if grad_scaler is None:
-                loss.backward()
-                opt.step()
-            else:
-                grad_scaler.scale(loss).backward()
-                grad_scaler.step(opt)
-                grad_scaler.update()
-
-            if scheduler and getattr(scheduler, '_update_per_step', False):
-                scheduler.step()
-
-            _, preds = logits.max(1)
-            loss = loss.item()
-
-            num_examples = label.shape[0]
-            label_counter.update(label.numpy(force=True))
-            num_batches += 1
-            count += num_examples
-            correct = (preds == label).sum().item()
-            total_loss += loss
-            total_correct += correct
-
-            probs = F.softmax(logits, dim=1)
-            correct_probs = probs[torch.arange(label.size(0)), label]
-            high_conf_p = (correct_probs > 0.9).float().mean().item()
-
-            tq.set_postfix({
-                'lr': '%.2e' % scheduler.get_last_lr()[0] if scheduler else opt.defaults['lr'],
-                'Loss': '%.5f' % loss,
-                'AvgLoss': '%.5f' % (total_loss / num_batches),
-                'Acc': '%.5f' % (correct / num_examples),
-                'AvgAcc': '%.5f' % (total_correct / count),
-                'Conf>.9': '%.5f' % high_conf_p
-            })
-
-
-            if tb_helper:
-                tb_helper.write_scalars([
-                    ("Loss/train", loss, tb_helper.batch_train_count + num_batches),
-                    ("Acc/train", correct / num_examples, tb_helper.batch_train_count + num_batches),
-                ])
-                if tb_helper.custom_fn:
-                    with torch.no_grad():
-                        tb_helper.custom_fn(model_output=model_output, model=model,
-                                            epoch=epoch, i_batch=num_batches, mode='train')
-
-            if steps_per_epoch is not None and num_batches >= steps_per_epoch:
-                break
-        if dev == 'xla':
-            torch_xla.sync()
+    def trace_handler(p):
+        output = p.key_averages().table(sort_by="self_cpu_time_total", row_limit=50)
+        print(output)
+        p.export_chrome_trace("/cern/profiler/trace_" + str(p.step_num) + ".json")
+        
+    with profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            schedule=torch.profiler.schedule(
+                wait=10,
+                warmup=10,
+                active=80,
+                repeat=2,
+                trace_handler=trace_handler),
+    ) as p:
+        with tqdm.tqdm(train_loader, mininterval=1) as tq:
+            for X, y, _ in tq:
+              i += 1
+              if i == 200:
+                  break
+              with (torch_xla.step() if dev == 'xla' else contextlib.nullcontext()):
+                inputs = [X[k].to(dev) for k in data_config.input_names]
+                label = y[data_config.label_names[0]].long().to(dev)
+                entry_count += label.shape[0]
+                try:
+                    mask = y[data_config.label_names[0] + '_mask'].bool().to(dev)
+                except KeyError:
+                    mask = None
+                opt.zero_grad(set_to_none=False)
+                with torch.autocast('xla' if dev == 'xla' else 'cuda', enabled=grad_scaler is not None):
+                    model_output, moe_loss = model(*inputs)
+                    logits, label, _ = _flatten_preds(model_output, label=label, mask=mask)
+                    loss = loss_func(logits, label)
+                    loss += moe_loss
+                    i += 1
+                if grad_scaler is None:
+                    loss.backward()
+                    opt.step()
+                else:
+                    grad_scaler.scale(loss).backward()
+                    grad_scaler.step(opt)
+                    grad_scaler.update()
+    
+                if scheduler and getattr(scheduler, '_update_per_step', False):
+                    scheduler.step()
+    
+                _, preds = logits.max(1)
+                loss = loss.item()
+                
+                p.step()
+                num_examples = label.shape[0]
+                label_counter.update(label.numpy(force=True))
+                num_batches += 1
+                count += num_examples
+                correct = (preds == label).sum().item()
+                total_loss += loss
+                total_correct += correct
+    
+                probs = F.softmax(logits, dim=1)
+                correct_probs = probs[torch.arange(label.size(0)), label]
+                high_conf_p = (correct_probs > 0.9).float().mean().item()
+    
+                tq.set_postfix({
+                    'lr': '%.2e' % scheduler.get_last_lr()[0] if scheduler else opt.defaults['lr'],
+                    'Loss': '%.5f' % loss,
+                    'AvgLoss': '%.5f' % (total_loss / num_batches),
+                    'Acc': '%.5f' % (correct / num_examples),
+                    'AvgAcc': '%.5f' % (total_correct / count),
+                    'Conf>.9': '%.5f' % high_conf_p
+                })
+    
+    
+                if tb_helper:
+                    tb_helper.write_scalars([
+                        ("Loss/train", loss, tb_helper.batch_train_count + num_batches),
+                        ("Acc/train", correct / num_examples, tb_helper.batch_train_count + num_batches),
+                    ])
+                    if tb_helper.custom_fn:
+                        with torch.no_grad():
+                            tb_helper.custom_fn(model_output=model_output, model=model,
+                                                epoch=epoch, i_batch=num_batches, mode='train')
+    
+                if steps_per_epoch is not None and num_batches >= steps_per_epoch:
+                    break
+            if dev == 'xla':
+                torch_xla.sync()
 
     time_diff = time.time() - start_time
     _logger.info('Processed %d entries in total (avg. speed %.1f entries/s)' % (entry_count, entry_count / time_diff))
