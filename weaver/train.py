@@ -405,7 +405,7 @@ def profile(args, model, model_info, device):
     def trace_handler(p):
         output = p.key_averages().table(sort_by="self_cuda_time_total", row_limit=50)
         print(output)
-        p.export_chrome_trace("/tmp/trace_" + str(p.step_num) + ".json")
+        p.export_chrome_trace("/cern/profiler/trace_" + str(p.step_num) + ".json")
 
     with profile(
         activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
