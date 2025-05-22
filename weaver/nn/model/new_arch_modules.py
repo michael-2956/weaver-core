@@ -155,6 +155,7 @@ class EfficientAttention(nn.Module):
                     if qk_u_alpha is None:
                         attn_weight += attn_mask
                     else:
+                        qk_u_alpha = qk_u_alpha.view(1, -1, 1, 1)
                         attn_weight = attn_weight * qk_u_alpha + attn_mask * (1 - qk_u_alpha)
                 attn_weight = torch.softmax(attn_weight, dim=-1)
                 attn_weight = torch.dropout(attn_weight, (self.attn_dropout if self.training else 0.0), train=True)
@@ -162,6 +163,7 @@ class EfficientAttention(nn.Module):
             else:
                 with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.CUDNN_ATTENTION, SDPBackend.MATH]):
                     if qk_u_alpha is not None:
+                        qk_u_alpha = qk_u_alpha.view(1, -1, 1, 1)
                         q *= qk_u_alpha
                         attn_mask *= 1 - qk_u_alpha
                     attn_output = F.scaled_dot_product_attention(

@@ -899,7 +899,7 @@ class ParticleTransformer(nn.Module):
         
         if add_QK_U_alpha_in_every_block:
             additional_layers = 0 if uniformly_add_nblocks is None else uniformly_add_nblocks
-            self.qk_u_encoder_alphas = nn.Parameter(torch.zeros(num_layers + additional_layers), requires_grad=True)
+            self.qk_u_encoder_alphas = nn.Parameter(torch.zeros(num_layers + additional_layers, cfg_block['num_heads']), requires_grad=True)
             trunc_normal_(self.qk_u_encoder_alphas, std=.02)
 
         if identical_attn_weights:
