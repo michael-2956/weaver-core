@@ -403,7 +403,7 @@ def profile(args, model, model_info, device):
         print(x.shape, x.device)
 
     def trace_handler(p):
-        output = p.key_averages().table(sort_by="self_cuda_time_total", row_limit=50)
+        output = p.key_averages().table(sort_by="self_cpu_time_total", row_limit=50)
         print(output)
         p.export_chrome_trace("/cern/profiler/trace_" + str(p.step_num) + ".json")
 
