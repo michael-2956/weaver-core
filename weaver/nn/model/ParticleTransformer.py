@@ -1024,7 +1024,7 @@ class ParticleTransformer(nn.Module):
                 if self.pemb_transforms_attn_w_logits:
                     assert not self.return_qk_final_U_attn_weights # can be implemented if need be
                     # completely different logic here
-                    qk_attn_weight_logits = block(x, x_cls=None, padding_mask=None, attn_mask=None, return_qk_attn_weight_logits=True, qk_u_alpha=qk_u_alpha)
+                    qk_attn_weight_logits = block(x, x_cls=None, padding_mask=None, attn_mask=None, return_qk_attn_weight_logits=True)
                     assert uu is None  # not supported here
                     pair_embeds = self.pair_embed(v, qk_attn_weight_logits, block_index=bi)
                     x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=None, use_qk_attn_weight_logits=pair_embeds, qk_u_alpha=qk_u_alpha)
@@ -1047,7 +1047,7 @@ class ParticleTransformer(nn.Module):
                     attn_mask = pair_embeds.view(-1, v.size(-1), v.size(-1))  # (N*num_heads, P, P)
 
                 if self.return_qk_final_U_attn_weights:
-                    qk_attn_weight_logits = block(x, x_cls=None, padding_mask=None, attn_mask=None, return_qk_attn_weight_logits=True, qk_u_alpha=qk_u_alpha)
+                    qk_attn_weight_logits = block(x, x_cls=None, padding_mask=None, attn_mask=None, return_qk_attn_weight_logits=True)
                     qk_attn_weights_list.append(qk_attn_weight_logits.detach().cpu())
                 
                 if self.pemb_needs_prev_attn_w:
