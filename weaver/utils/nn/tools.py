@@ -82,9 +82,8 @@ def train_classification(
                 wait=10,
                 warmup=10,
                 active=80,
-                repeat=2,
-                trace_handler=trace_handler),
-    ) as p:
+                repeat=2),
+            on_trace_ready=trace_handler) as p:
         with tqdm.tqdm(train_loader, mininterval=1) as tq:
             for X, y, _ in tq:
               i += 1
