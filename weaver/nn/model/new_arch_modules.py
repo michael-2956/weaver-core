@@ -70,6 +70,7 @@ class EfficientAttention(nn.Module):
             return_final_attn_weight=False,
             return_qk_attn_weight_logits=False,
             use_qk_attn_weight_logits=None,   # (B, num_heads, Lq, Lkv)
+            qk_u_alpha=None,
         ):
         """
         - `return_final_attn_weight` makes the function \\
@@ -85,6 +86,9 @@ class EfficientAttention(nn.Module):
         Lq, B, _ = query.shape
         # number of keys/values
         Lkv, _, _ = key.shape
+
+        # one does not make sense without the other
+        assert not ((qk_u_alpha is not None) and (attn_mask is None))
 
         # project
         q = self.q_proj(query)   # (Lq, B, embed_dim)
@@ -148,12 +152,18 @@ class EfficientAttention(nn.Module):
                 else:
                     attn_weight = use_qk_attn_weight_logits
                 if attn_mask is not None:
-                    attn_weight += attn_mask
+                    if qk_u_alpha is None:
+                        attn_weight += attn_mask
+                    else:
+                        attn_weight = attn_weight * qk_u_alpha + attn_mask * (1 - qk_u_alpha)
                 attn_weight = torch.softmax(attn_weight, dim=-1)
                 attn_weight = torch.dropout(attn_weight, (self.attn_dropout if self.training else 0.0), train=True)
                 attn_output = attn_weight @ v
             else:
                 with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.CUDNN_ATTENTION, SDPBackend.MATH]):
+                    if qk_u_alpha is not None:
+                        q *= qk_u_alpha
+                        attn_mask *= 1 - qk_u_alpha
                     attn_output = F.scaled_dot_product_attention(
                         q, k, v,
                         attn_mask=attn_mask,
@@ -239,6 +249,7 @@ class AlteredBlock(nn.Module):
             return_final_attn_weight=False,
             return_qk_attn_weight_logits=False,
             use_qk_attn_weight_logits=None,   # (B, num_heads, Lq, Lkv)
+            qk_u_alpha=None,
         ):
         """
         x: (seq_len, batch, embed_dim)
@@ -274,16 +285,16 @@ class AlteredBlock(nn.Module):
             
             if return_qk_attn_weight_logits:
                 assert use_qk_attn_weight_logits is None
-                return self.attn(x, x, x, key_padding_mask=padding_mask, attn_mask=attn_mask, return_qk_attn_weight_logits=True)
+                return self.attn(x, x, x, key_padding_mask=padding_mask, attn_mask=attn_mask, return_qk_attn_weight_logits=True, qk_u_alpha=qk_u_alpha)
             if use_qk_attn_weight_logits is not None:
                 assert not return_final_attn_weight  # support can be added if need be
                 assert not return_qk_attn_weight_logits
-                x = self.attn(x, x, x, key_padding_mask=padding_mask, attn_mask=attn_mask, use_qk_attn_weight_logits=use_qk_attn_weight_logits)
+                x = self.attn(x, x, x, key_padding_mask=padding_mask, attn_mask=attn_mask, use_qk_attn_weight_logits=use_qk_attn_weight_logits, qk_u_alpha=qk_u_alpha)
             else:
                 if return_final_attn_weight:
-                    x, attn_weight = self.attn(x, x, x, key_padding_mask=padding_mask, attn_mask=attn_mask, return_final_attn_weight=True)
+                    x, attn_weight = self.attn(x, x, x, key_padding_mask=padding_mask, attn_mask=attn_mask, return_final_attn_weight=True, qk_u_alpha=qk_u_alpha)
                 else:
-                    x = self.attn(x, x, x, key_padding_mask=padding_mask, attn_mask=attn_mask)
+                    x = self.attn(x, x, x, key_padding_mask=padding_mask, attn_mask=attn_mask, qk_u_alpha=qk_u_alpha)
 
         # Optionally apply head scaling.
         if self.c_attn is not None:

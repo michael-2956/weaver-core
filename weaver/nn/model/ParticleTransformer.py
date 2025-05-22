@@ -808,6 +808,7 @@ class ParticleTransformer(nn.Module):
                  return_qk_final_U_attn_weights=False,
                  add_sink_token=False,
                  uniformly_add_nblocks=None,
+                 add_QK_U_alpha_in_every_block=True,
                  # uses cls_block_params & num_cls_layers & identical_attn_weights
                  weighted_decode_every_layer=False,
                  weighted_decode_softmax_mode="softmax",  # accepts softmax, gumbel_softmax, gumbel_softmax_sample
@@ -849,6 +850,7 @@ class ParticleTransformer(nn.Module):
         self.return_qk_final_U_attn_weights = return_qk_final_U_attn_weights
         self.uniformly_add_nblocks = uniformly_add_nblocks
         self.weighted_decode_every_layer = weighted_decode_every_layer
+        self.add_QK_U_alpha_in_every_block = add_QK_U_alpha_in_every_block
 
         if weighted_decode_every_layer:
             assert weighted_decode_softmax_mode in ["softmax", "gumbel_softmax", "gumbel_softmax_sample"]
@@ -894,6 +896,11 @@ class ParticleTransformer(nn.Module):
                 mode="concat" if self.pemb_needs_prev_attn_w or self.pemb_transforms_attn_w_logits else "sum",
                 with_residual=pair_embed_with_residual
             ) if pair_embed_dims is not None and pair_input_dim + pair_extra_dim > 0 else None
+        
+        if add_QK_U_alpha_in_every_block:
+            additional_layers = 0 if uniformly_add_nblocks is None else uniformly_add_nblocks
+            self.qk_u_encoder_alphas = nn.Parameter(torch.zeros(num_layers + additional_layers), requires_grad=True)
+            trunc_normal_(self.qk_u_encoder_alphas, std=.02)
 
         if identical_attn_weights:
             self.blocks = nn.ModuleList([AlteredBlock(**cfg_block) for _ in range(1)])
@@ -944,7 +951,7 @@ class ParticleTransformer(nn.Module):
 
     @torch.jit.ignore
     def no_weight_decay(self):
-        return {'cls_token', 'sink_token', }
+        return {'cls_token', 'sink_token', 'qk_u_encoder_alphas', }
 
     def forward(self, x, v=None, mask=None, uu=None, uu_idx=None):
         # x: (N, C, P)
@@ -1010,13 +1017,17 @@ class ParticleTransformer(nn.Module):
                 else:
                     block = self.blocks[bi]
 
+                qk_u_alpha = None
+                if self.add_QK_U_alpha_in_every_block:
+                    qk_u_alpha = self.qk_u_encoder_alphas[bi]
+
                 if self.pemb_transforms_attn_w_logits:
                     assert not self.return_qk_final_U_attn_weights # can be implemented if need be
                     # completely different logic here
-                    qk_attn_weight_logits = block(x, x_cls=None, padding_mask=None, attn_mask=None, return_qk_attn_weight_logits=True)
+                    qk_attn_weight_logits = block(x, x_cls=None, padding_mask=None, attn_mask=None, return_qk_attn_weight_logits=True, qk_u_alpha=qk_u_alpha)
                     assert uu is None  # not supported here
                     pair_embeds = self.pair_embed(v, qk_attn_weight_logits, block_index=bi)
-                    x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=None, use_qk_attn_weight_logits=pair_embeds)
+                    x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=None, use_qk_attn_weight_logits=pair_embeds, qk_u_alpha=qk_u_alpha)
                     continue
 
                 attn_mask = None
@@ -1036,22 +1047,23 @@ class ParticleTransformer(nn.Module):
                     attn_mask = pair_embeds.view(-1, v.size(-1), v.size(-1))  # (N*num_heads, P, P)
 
                 if self.return_qk_final_U_attn_weights:
-                    qk_attn_weight_logits = block(x, x_cls=None, padding_mask=None, attn_mask=None, return_qk_attn_weight_logits=True)
+                    qk_attn_weight_logits = block(x, x_cls=None, padding_mask=None, attn_mask=None, return_qk_attn_weight_logits=True, qk_u_alpha=qk_u_alpha)
                     qk_attn_weights_list.append(qk_attn_weight_logits.detach().cpu())
                 
                 if self.pemb_needs_prev_attn_w:
                     x, prev_attn_weight = block(
                         x, x_cls=None, padding_mask=padding_mask,
-                        attn_mask=attn_mask, return_final_attn_weight=True
+                        attn_mask=attn_mask, return_final_attn_weight=True,
+                        qk_u_alpha=qk_u_alpha
                     )
                     if self.return_qk_final_U_attn_weights:
                         attn_weights_list.append(attn_weights.detach().cpu())
                 else:
                     if self.return_qk_final_U_attn_weights:
-                        x, attn_weights = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask, return_final_attn_weight=True)
+                        x, attn_weights = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask, return_final_attn_weight=True, qk_u_alpha=qk_u_alpha)
                         attn_weights_list.append(attn_weights.detach().cpu())
                     else:
-                        x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask)
+                        x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask, qk_u_alpha=qk_u_alpha)
                 
                 if self.weighted_decode_every_layer:
                     x_weight = decode(x, self.weighting_token, self.weighting_blocks, self.weighting_norm)
