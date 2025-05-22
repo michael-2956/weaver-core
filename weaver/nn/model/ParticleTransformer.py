@@ -808,7 +808,7 @@ class ParticleTransformer(nn.Module):
                  return_qk_final_U_attn_weights=False,
                  add_sink_token=False,
                  uniformly_add_nblocks=None,
-                 add_QK_U_alpha_in_every_block=True,
+                 add_QK_U_alpha_in_every_block=False,
                  # uses cls_block_params & num_cls_layers & identical_attn_weights
                  weighted_decode_every_layer=False,
                  weighted_decode_softmax_mode="softmax",  # accepts softmax, gumbel_softmax, gumbel_softmax_sample
