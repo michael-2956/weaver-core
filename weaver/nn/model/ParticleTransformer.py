@@ -630,6 +630,7 @@ class InteractionTransformer(nn.Module):
                  activation='gelu',
                  attention='linformer',
                  lin_proj_dim=128,
+                 return_P_bars=False,
                  # misc
                  trim=True,
                  trim_mode="random_cutoff_in_train",
@@ -664,6 +665,8 @@ class InteractionTransformer(nn.Module):
         self.use_amp = use_amp
         self.use_xla = use_xla
         self.identical_attn_weights = identical_attn_weights
+        self.return_P_bars = return_P_bars
+        self.input_seq_len = input_seq_len
 
         self.interactions_dim = interactions_dim
 
@@ -759,9 +762,16 @@ class InteractionTransformer(nn.Module):
 
             # input embedding
             x = self.embed(x_pair)  # (P*P, N, interactions_dim)
+
+            if self.return_P_bars:
+                P_bars = []
             
             for i in range(self.num_layers):
                 bi = 0 if self.identical_attn_weights else i
+                if self.return_P_bars:
+                    P_bars.append(
+                        self.blocks[bi](x, x_cls=None, padding_mask=padding_mask, attn_mask=None, return_qk_attn_weight_logits=True)
+                    )
                 x = self.blocks[bi](x, x_cls=None, padding_mask=padding_mask, attn_mask=None)
 
             # extract class token
@@ -779,7 +789,10 @@ class InteractionTransformer(nn.Module):
             if self.for_inference:
                 output = torch.softmax(output, dim=1)
             # print('output:\n', output)
-            return output
+            if self.return_P_bars:
+                return output, P_bars
+            else:
+                return output
 
 
 class ParticleTransformer(nn.Module):

@@ -124,8 +124,24 @@ class EfficientAttention(nn.Module):
         v = v.view(B, Lkv, self.num_heads, self.head_dim).transpose(1, 2) # shape: (B, num_heads, Lkv, head_dim)
 
         if return_qk_attn_weight_logits:
-            assert self.attention_mode == 'classic'  # linformer may be supported if need be
-            return q @ k.transpose(-2, -1) / math.sqrt(q.size(-1))
+            if self.attention_mode == 'classic':
+                return q @ k.transpose(-2, -1) / math.sqrt(q.size(-1))
+            else:
+                input_mask = None
+                if key_padding_mask is not None:
+                    input_mask = ~key_padding_mask  # (B, Lkv)
+                P_bars = []
+                
+                for hdi, head in enumerate(self.heads):
+                    q_head = q[:, hdi]  # shape: (B, Lq, head_dim)
+                    k_head = k[:, hdi]  # shape: (B, Lkv, head_dim)
+                    v_head = v[:, hdi]  # shape: (B, Lkv, head_dim)
+                    _ = head(q_head, k_head, v_head, input_mask=input_mask, visualize=True)  # (B, Lq, head_dim)
+                    P_bars.append(head.P_bar.unsqueeze(1))  # (B, 1, Lq, interactions_dim)
+                
+                P_bars = torch.cat(P_bars, dim=1)  # (B, num_heads, Lq, interactions_dim)
+
+                return P_bars
 
         if self.attention_mode == 'classic':
             
