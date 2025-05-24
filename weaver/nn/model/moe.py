@@ -116,22 +116,19 @@ class GEGLU(Module):
         return F.gelu(gate) * x * self.mult_bias
 
 class Expert(Module):
-    def __init__(
-        self,
-        dim,
-        hidden_mult = 4,
-        mult_bias = True,
-        prenorm = False
-    ):
+    def __init__(self,
+                 embed_dim,
+                 ffn_dim,
+                 activation='gelu',
+                 activation_dropout=0.1,
+                 scale_fc=True):
         super().__init__()
-        dim_hidden = int(dim * hidden_mult * 2 / 3)
 
-        self.net = Sequential(
-            RMSNorm(dim) if prenorm else None,
-            nn.Linear(dim, dim_hidden * 2),
-            GEGLU(dim_hidden, mult_bias = mult_bias),
-            nn.Linear(dim_hidden, dim)
-        )
+        self.fc1 = nn.Linear(embed_dim, ffn_dim)
+        self.act = GEGLU(ffn_dim) if activation == 'gelu' else nn.ReLU()
+        self.act_dropout = nn.Dropout(activation_dropout)
+        self.post_fc_norm = nn.LayerNorm(ffn_dim) if scale_fc else None
+        self.fc2 = nn.Linear(ffn_dim, embed_dim)
 
         self.apply(self.init_)
 
@@ -144,7 +141,14 @@ class Expert(Module):
             module.bias.data.uniform_(-std, std)
 
     def forward(self, x):
-        return self.net(x)
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.act_dropout(x)
+        if self.post_fc_norm is not None:
+            x = self.post_fc_norm(x)
+        x = self.fc2(x)
+        return x
+
 
 class Experts(Module):
     def __init__(
