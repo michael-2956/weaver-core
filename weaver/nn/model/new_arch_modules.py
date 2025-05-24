@@ -153,11 +153,18 @@ class MoEFFN(nn.Module):
         flat_experts = topk_idx.reshape(-1)       # [T * k_route]
         flat_gates = topk_vals.reshape(-1)        # [T * k_route]
 
-        # Sort the selections by expert index to process tokens expert-by-expert
         sorted_idx = torch.argsort(flat_experts)
-        flat_experts_sorted = flat_experts[sorted_idx]   # sorted expert indices
-        flat_tokens_sorted = flat_tokens[sorted_idx]     # corresponding token indices
-        flat_gates_sorted = flat_gates[sorted_idx]       # corresponding gate values
+        flat_experts_sorted = flat_experts[sorted_idx]  # sorted expert indices
+        flat_tokens_sorted = flat_tokens[sorted_idx]  # corresponding token indices
+        flat_gates_sorted = flat_gates[sorted_idx]  # corresponding gate values
+
+        max_expert_tokens = torch.bincount(flat_experts, minlength=self.route_experts).max().int().item()
+        expert_tokens_batch = torch.ones(size=(self.route_experts, max_expert_tokens), device=x.device) * -1
+        for i in range(flat_tokens.numel()):
+
+
+        # Sort the selections by expert index to process tokens expert-by-expert
+
         
         expert_idxs, expert_token_counts = torch.unique_consecutive(flat_experts_sorted, return_counts=True)
         boundaries = torch.cumsum(expert_token_counts, dim=0)
@@ -168,7 +175,15 @@ class MoEFFN(nn.Module):
             right = boundaries_cpu[i]
             expert_indices[expert_idx] = flat_tokens_sorted[left:right]
             left = right
-        
+# [[23, 4, 5],
+#  [19, 20, 21],
+#  ... 128 elements
+#  [13, 20, 22]]
+#
+# [[1, 5, 7, ..., 56],
+#  [5, 0, 3],
+# ... 32 elements
+#  [74, 23, 90, 34, ..., 32]
         if log_verbose:
             self.logger.info('Running top-k')
         for expert_idx in expert_idxs_cpu:
