@@ -9,6 +9,9 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from linformer_pytorch import LinearAttentionHead, get_EF
 
+from weaver.nn.model.moe import SparseMoEBlock, MoE, Expert, Experts
+
+
 class FFNBlockSection(nn.Module):
     def __init__(self,
                  embed_dim,
@@ -468,9 +471,17 @@ class AlteredBlock(nn.Module):
         self.pre_fc_norm = nn.LayerNorm(embed_dim)
         self.use_moe = use_moe
         if self.use_moe:
-            self.ffn = MoEFFN(self.embed_dim, self.ffn_dim, logger, N, k_shared, m, top_k, device_count, expert_balance_alpha, device_balance_alpha, activation, activation_dropout, scale_fc)
+            # self.ffn = MoEFFN(self.embed_dim, self.ffn_dim, logger, N, k_shared, m, top_k, device_count, expert_balance_alpha, device_balance_alpha, activation, activation_dropout, scale_fc)
+            experts_list = [Expert(embed_dim = self.embed_dim, ffn_dim = self.ffn_dim, activation_dropout=activation_dropout, scale_fc=scale_fc) for _ in range(N)]
+            experts = Experts(experts_list)
+            moe = MoE(self.embed_dim,
+                      self.ffn_dim,
+                      N,
+                      experts=experts,
+                      gating_top_n=top_k,)
+            self.ffn = SparseMoEBlock(moe=moe)
         else:
-            self.ffn = FFNBlockSection(self.embed_dim, self.ffn_dim, activation, activation_dropout, scale_fc)
+            self.ffn = Expert(self.embed_dim, self.ffn_dim, activation, activation_dropout, scale_fc)
 
         self.c_attn = nn.Parameter(torch.ones(num_heads), requires_grad=True) if scale_heads else None
         self.w_resid = nn.Parameter(torch.ones(embed_dim), requires_grad=True) if scale_resids else None
@@ -550,12 +561,10 @@ class AlteredBlock(nn.Module):
         # ============ MOE Section ============
         if self.use_moe:
             # logger.info(f'MoE ffn started')
-            x, expert_loss, device_loss = self.ffn(x)
-            # logger.info(f'MoE ffn ended')
-            total_loss = expert_loss + device_loss
+            x, loss = self.ffn(x)
         else:
-            x, _, _ = self.ffn(x)
-            total_loss = torch.tensor(0.0, device=x.device)
+            x, _ = self.ffn(x)
+            loss = torch.tensor(0.0, device=x.device)
         # ============ MOE Section ============
         
         x = self.dropout(x)
@@ -565,7 +574,7 @@ class AlteredBlock(nn.Module):
         # ============ FFN Section ============
 
         if return_final_attn_weight:
-            return x, attn_weight, total_loss
+            return x, attn_weight, loss
         else:
-            return x, None, total_loss
+            return x, None, loss
 

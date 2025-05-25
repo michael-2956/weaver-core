@@ -422,7 +422,6 @@ class MoE(Module):
                  straight_through_dispatch_tensor = True,
                  differentiable_topk = False,
                  differentiable_topk_fused = True,
-                 is_distributed = None,
                  allow_var_seq_len = False
                  ):
         super().__init__()
@@ -435,6 +434,7 @@ class MoE(Module):
             num_gates = num_experts,
             straight_through_dispatch_tensor = straight_through_dispatch_tensor,
             differentiable_topk = differentiable_topk,
+            differentiable_topk_fused=differentiable_topk_fused,
             threshold_train = threshold_train,
             threshold_eval = threshold_eval,
             capacity_factor_train = capacity_factor_train,
@@ -453,20 +453,21 @@ class MoE(Module):
 
     def forward(
         self,
-        x,
+        x, # [n, b, d]
         noise_gates = False,
         noise_mult = 1.
     ):
-        dispatch_tensor, combine_tensor, balance_loss, router_z_loss = self.gate(x, noise_gates = noise_gates, noise_mult = noise_mult)
+        x_reshaped = einsum('n b d -> b n d', x)
+        dispatch_tensor, combine_tensor, balance_loss, router_z_loss = self.gate(x_reshaped, noise_gates = noise_gates, noise_mult = noise_mult)
 
         # dispatch
-        expert_inputs = einsum('b n d, b n e c -> b e c d', x, dispatch_tensor)
+        expert_inputs = einsum('b n d, b n e c -> b e c d', x_reshaped, dispatch_tensor)
 
         # feed the expert inputs through the experts.
         expert_outputs = self.experts(expert_inputs)
 
         # combine
-        output = einsum('b e c d, b n e c -> b n d', expert_outputs, combine_tensor)
+        output = einsum('b e c d, b n e c -> n b d', expert_outputs, combine_tensor) # [n, b, d]
 
         # losses
         weighted_balance_loss = balance_loss * self.balance_loss_coef
@@ -479,7 +480,6 @@ class MoE(Module):
 
 # sparse moe block
 # in particular, they found that adding a feedforward before or after greatly stabilized the training and improved results
-
 class SparseMoEBlock(Module):
     @beartype
     def __init__(
@@ -496,8 +496,8 @@ class SparseMoEBlock(Module):
         self.moe = moe
         self.moe_prenorm = RMSNorm(embed_dim)
 
-        self.ff_before = Expert(embed_dim, ffn_dim=ffn_dim, prenorm = True) if add_ff_before else None
-        self.ff_after = Expert(embed_dim, ffn_dim=ffn_dim, prenorm = True) if add_ff_after else None
+        self.ff_before = Expert(embed_dim, ffn_dim=embed_dim, prenorm = True) if add_ff_before else None
+        self.ff_after = Expert(embed_dim, ffn_dim=embed_dim, prenorm = True) if add_ff_after else None
 
     def forward(
         self,
