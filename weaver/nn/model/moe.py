@@ -476,7 +476,7 @@ class MoE(Module):
         # combine the losses
         total_aux_loss = weighted_balance_loss + weighted_router_z_loss
 
-        return MixtureOfExpertsReturn(output, total_aux_loss)
+        return MixtureOfExpertsReturn(output, total_aux_loss.squeeze())
 
 # sparse moe block
 # in particular, they found that adding a feedforward before or after greatly stabilized the training and improved results
