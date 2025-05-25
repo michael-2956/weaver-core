@@ -24,9 +24,7 @@ MIN_EXPERT_CAPACITY = 4
 
 MixtureOfExpertsReturn = namedtuple('MixtureOfExpertsReturn', [
     'outputs',
-    'total_aux_loss',
-    'balance_loss',
-    'router_z_loss'
+    'total_aux_loss'
 ])
 
 # helper functions
@@ -89,7 +87,6 @@ def safe_one_hot(indexes, max_length):
     return F.one_hot(indexes, one_hot_classes)[..., :max_length]
 
 # rms normalization
-
 class RMSNorm(Module):
     def __init__(self, dim):
         super().__init__()
@@ -101,7 +98,6 @@ class RMSNorm(Module):
 
 # expert class
 # best performing was ff geglu with multiplicative bias (just after gating)
-
 class GEGLU(Module):
     def __init__(
         self,
@@ -121,10 +117,13 @@ class Expert(Module):
                  ffn_dim,
                  activation='gelu',
                  activation_dropout=0.1,
+                 prenorm=False,
                  scale_fc=True):
         super().__init__()
 
-        self.fc1 = nn.Linear(embed_dim, ffn_dim)
+        if prenorm:
+            self.norm = RMSNorm(embed_dim)
+
         self.act = GEGLU(ffn_dim) if activation == 'gelu' else nn.ReLU()
         self.act_dropout = nn.Dropout(activation_dropout)
         self.post_fc_norm = nn.LayerNorm(ffn_dim) if scale_fc else None
@@ -184,49 +183,20 @@ class Experts(Module):
             device = self.device if expert in experts_set else 'cpu'
             expert.to(device)
 
-    def forward(
-        self,
-        x,
-        is_distributed = None
-    ):
+    def forward(self, x):
         """
         einops notation:
         b - batch
-        r - rank (device / machines)
         e - experts
         n - sequence (number of tokens per expert)
         d - feature dimension
         """
 
-        # declare some variables
-
-        is_distributed = default(is_distributed, self.is_distributed)
         shape, num_experts = x.shape, self.num_experts
-        seq_len = shape[-2]
-
-        # for now naively all gather across batch dimension if distributed, optimize later
-
-        world_size = 1
-
-        num_experts_per_rank = num_experts
-        expert_slice = slice(0, num_experts)
-
-
-        # if distributed, each machine only handles subset of experts and batch
-
         x = rearrange(x, 'b e n d -> e b n d')
-
-        # get the experts in use
-
-        self.all_experts_to_cpu_besides(expert_slice)
-
-        experts = self.experts[expert_slice]
-
-        # route tokens to appropriate experts
-
         outs = []
 
-        for expert, expert_input in zip(experts, x):
+        for expert, expert_input in zip(self.experts, x):
             out = expert(expert_input)
             outs.append(out)
 
@@ -249,7 +219,6 @@ class Experts(Module):
 # gating network
 
 class TopNGating(Module):
-
     @beartype
     def __init__(
         self,
@@ -338,11 +307,11 @@ class TopNGating(Module):
             noise = gumbel_noise(maybe_noised_gate_logits)
             maybe_noised_gate_logits = maybe_noised_gate_logits + noise * noise_mult
 
-        raw_gates = maybe_noised_gate_logits.softmax(dim = -1)
+        raw_gates = maybe_noised_gate_logits.softmax(dim = -1) # [b, n, e]
 
         # find top N experts per position
 
-        topk_return = self.topk(raw_gates, k = top_n)
+        topk_return = self.topk(raw_gates, k = top_n) # [b, n, k]
 
         gate_indices = topk_return.indices
 
@@ -355,43 +324,32 @@ class TopNGating(Module):
             gates = topk_return.values
 
         # move the top-n dimension to be first
-
-        gates = rearrange(gates, '... k -> k ...')
-        gate_indices = rearrange(gate_indices, '... k -> k ...')
+        gates = rearrange(gates, '... k -> k ...') # [k, b, n]
+        gate_indices = rearrange(gate_indices, '... k -> k ...') # [k, b, n]
 
         # masks
-
         one_hot_gate_indices = F.one_hot(gate_indices, num_gates)
         mask = one_hot_gate_indices.float()
-
         mask_1 = mask[0] # needed for balancing loss
 
         # normalize top-n gate scores
-
         denom = reduce(gates, 'k ... -> 1 ...', 'sum').clamp(min = eps)
         gates = gates / denom
 
         # best performing policy was to route to the second expert, with probability of min(1., score / threshold), where score = gate2 / (gate1 + gate2)
         # optimal threshold was ~ 0.2
         # generalized to more than 2 experts
-
         probs = torch.zeros_like(gates).uniform_(0., 1.)
-
         should_route = probs < einx.divide('k b n, k -> k b n', gates, threshold.clamp(min = eps))
 
         # tokens should always be routed to first expert
         # threshold for first expert already set to very small number, but just in case
-
         should_route[0, ...] = True
-
         mask *= rearrange(should_route.float(), '... -> ... 1')
-
         mask_cumsum = cumsum_exclusive(mask, dim = -2) # along sequence dimension
 
         # compute assignment to experts - (batch, seq, experts)
-
         # This is the position within the expert's mini-batch for this sequence
-
         positions = []
         prev_expert_count = 0.
 
@@ -537,13 +495,12 @@ class MoE(Module):
 
         total_aux_loss = weighted_balance_loss + weighted_router_z_loss
 
-        return MixtureOfExpertsReturn(output, total_aux_loss, balance_loss, router_z_loss)
+        return MixtureOfExpertsReturn(output, total_aux_loss)
 
 # sparse moe block
 # in particular, they found that adding a feedforward before or after greatly stabilized the training and improved results
 
 class SparseMoEBlock(Module):
-
     @beartype
     def __init__(
         self,
@@ -577,7 +534,7 @@ class SparseMoEBlock(Module):
 
         residual = x
 
-        moe_out, total_aux_loss, balance_loss, router_z_loss = self.moe(self.moe_prenorm(x), noise_gates = noise_gates, noise_mult = noise_mult)
+        moe_out, total_aux_loss = self.moe(self.moe_prenorm(x), noise_gates = noise_gates, noise_mult = noise_mult)
 
         x = moe_out + residual
 
@@ -586,4 +543,4 @@ class SparseMoEBlock(Module):
         if exists(self.ff_after):
             x = self.ff_after(x) + x
 
-        return MixtureOfExpertsReturn(x, total_aux_loss, balance_loss, router_z_loss)
+        return MixtureOfExpertsReturn(x, total_aux_loss)
