@@ -19,3 +19,4 @@ linformer-pytorch
 beartype
 einx
 einops
+colt5_attention
