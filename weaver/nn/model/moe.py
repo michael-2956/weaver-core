@@ -419,32 +419,31 @@ class TopNGating(Module):
 # plain mixture of experts
 
 class MoE(Module):
-
     @beartype
     def __init__(self,
-        dim,
-        num_experts = 16,
-        expert_hidden_mult = 4,
-        threshold_train = 0.2,
-        threshold_eval = 0.2,
-        capacity_factor_train = 1.25,
-        capacity_factor_eval = 2.,
-        gating_top_n = 2,
-        balance_loss_coef = 1e-2,
-        router_z_loss_coef = 1e-3,
-        experts: Module | None = None,
-        straight_through_dispatch_tensor = True,
-        differentiable_topk = False,
-        differentiable_topk_fused = True,
-        is_distributed = None,
-        allow_var_seq_len = False
-    ):
+                 embed_dim,
+                 ffn_dim,
+                 num_experts = 16,
+                 threshold_train = 0.2,
+                 threshold_eval = 0.2,
+                 capacity_factor_train = 1.25,
+                 capacity_factor_eval = 2.,
+                 gating_top_n = 2,
+                 balance_loss_coef = 1e-2,
+                 router_z_loss_coef = 1e-3,
+                 experts: Module | None = None,
+                 straight_through_dispatch_tensor = True,
+                 differentiable_topk = False,
+                 differentiable_topk_fused = True,
+                 is_distributed = None,
+                 allow_var_seq_len = False
+                 ):
         super().__init__()
-        self.dim = dim
+        self.embed_dim = embed_dim
         self.num_experts = num_experts
 
         self.gate = TopNGating(
-            dim,
+            embed_dim,
             top_n = gating_top_n,
             num_gates = num_experts,
             straight_through_dispatch_tensor = straight_through_dispatch_tensor,
@@ -455,11 +454,10 @@ class MoE(Module):
             capacity_factor_eval = capacity_factor_eval
         )
 
-        experts = default(experts, lambda: [Expert(dim = dim, hidden_mult = expert_hidden_mult) for _ in range(num_experts)])
+        experts = default(experts, lambda: [Expert(embed_dim = embed_dim, ffn_dim = ffn_dim) for _ in range(num_experts)])
 
         self.experts = Experts(
             experts,
-            is_distributed = is_distributed,
             allow_var_seq_len = allow_var_seq_len
         )
 
@@ -475,24 +473,19 @@ class MoE(Module):
         dispatch_tensor, combine_tensor, balance_loss, router_z_loss = self.gate(x, noise_gates = noise_gates, noise_mult = noise_mult)
 
         # dispatch
-
         expert_inputs = einsum('b n d, b n e c -> b e c d', x, dispatch_tensor)
 
         # feed the expert inputs through the experts.
-
         expert_outputs = self.experts(expert_inputs)
 
         # combine
-
         output = einsum('b e c d, b n e c -> b n d', expert_outputs, combine_tensor)
 
         # losses
-
         weighted_balance_loss = balance_loss * self.balance_loss_coef
         weighted_router_z_loss = router_z_loss * self.router_z_loss_coef
 
         # combine the losses
-
         total_aux_loss = weighted_balance_loss + weighted_router_z_loss
 
         return MixtureOfExpertsReturn(output, total_aux_loss)
@@ -510,13 +503,14 @@ class SparseMoEBlock(Module):
         add_ff_after = True
     ):
         super().__init__()
-        dim = moe.dim
+        embed_dim = moe.embed_dim
+        ffn_dim = moe.ffn_dim
 
         self.moe = moe
-        self.moe_prenorm = RMSNorm(dim)
+        self.moe_prenorm = RMSNorm(embed_dim)
 
-        self.ff_before = Expert(dim, prenorm = True) if add_ff_before else None
-        self.ff_after = Expert(dim, prenorm = True) if add_ff_after else None
+        self.ff_before = Expert(embed_dim, ffn_dim=ffn_dim, prenorm = True) if add_ff_before else None
+        self.ff_after = Expert(embed_dim, ffn_dim=ffn_dim, prenorm = True) if add_ff_after else None
 
     def forward(
         self,
@@ -526,20 +520,15 @@ class SparseMoEBlock(Module):
     ):
 
         # feedforward before
-
         if exists(self.ff_before):
             x = self.ff_before(x) + x
 
         # mixture of experts layer
-
         residual = x
-
         moe_out, total_aux_loss = self.moe(self.moe_prenorm(x), noise_gates = noise_gates, noise_mult = noise_mult)
-
         x = moe_out + residual
 
         # feedforward after
-
         if exists(self.ff_after):
             x = self.ff_after(x) + x
 
