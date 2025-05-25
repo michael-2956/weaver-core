@@ -18,3 +18,4 @@ pytorch-optimizer
 linformer-pytorch
 beartype
 einx
+einops
