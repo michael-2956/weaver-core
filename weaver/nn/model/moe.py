@@ -427,6 +427,7 @@ class MoE(Module):
                  ):
         super().__init__()
         self.embed_dim = embed_dim
+        self.ffn_dim = ffn_dim
         self.num_experts = num_experts
 
         self.gate = TopNGating(
@@ -497,8 +498,8 @@ class SparseMoEBlock(Module):
         self.moe = moe
         self.moe_prenorm = RMSNorm(embed_dim)
 
-        self.ff_before = Expert(embed_dim, ffn_dim=embed_dim, prenorm = True) if add_ff_before else None
-        self.ff_after = Expert(embed_dim, ffn_dim=embed_dim, prenorm = True) if add_ff_after else None
+        self.ff_before = Expert(embed_dim, ffn_dim=ffn_dim, prenorm = True) if add_ff_before else None
+        self.ff_after = Expert(embed_dim, ffn_dim=ffn_dim, prenorm = True) if add_ff_after else None
 
     def forward(
         self,
