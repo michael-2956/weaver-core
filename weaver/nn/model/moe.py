@@ -457,7 +457,7 @@ class MoE(Module):
         noise_gates = False,
         noise_mult = 1.
     ):
-        x_reshaped = einsum('n b d -> b n d', x)
+        x_reshaped = x.permute(1, 0, 2) # [n, b, d] -> [b, n, d]
         dispatch_tensor, combine_tensor, balance_loss, router_z_loss = self.gate(x_reshaped, noise_gates = noise_gates, noise_mult = noise_mult)
 
         # dispatch
