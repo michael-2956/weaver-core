@@ -472,8 +472,7 @@ class AlteredBlock(nn.Module):
         self.use_moe = use_moe
         if self.use_moe:
             # self.ffn = MoEFFN(self.embed_dim, self.ffn_dim, logger, N, k_shared, m, top_k, device_count, expert_balance_alpha, device_balance_alpha, activation, activation_dropout, scale_fc)
-            experts_list = [Expert(embed_dim = self.embed_dim, ffn_dim = self.ffn_dim, activation_dropout=activation_dropout, scale_fc=scale_fc) for _ in range(N)]
-            experts = Experts(experts_list)
+            experts = [Expert(embed_dim = self.embed_dim, ffn_dim = self.ffn_dim, activation_dropout=activation_dropout, scale_fc=scale_fc) for _ in range(N)]
             moe = MoE(self.embed_dim,
                       self.ffn_dim,
                       N,

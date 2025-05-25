@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from functools import partial
 from collections import namedtuple
-from typing import Tuple
+from typing import Tuple, List
 
 import torch
 from torch.nn import Module, ModuleList
@@ -419,7 +419,7 @@ class MoE(Module):
                  gating_top_n = 2,
                  balance_loss_coef = 1e-2,
                  router_z_loss_coef = 1e-3,
-                 experts: Module | None = None,
+                 experts: List[Expert] | None = None,
                  straight_through_dispatch_tensor = True,
                  differentiable_topk = False,
                  differentiable_topk_fused = True,
