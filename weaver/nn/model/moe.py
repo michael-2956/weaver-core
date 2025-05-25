@@ -141,9 +141,7 @@ class Expert(Module):
                  scale_fc=True):
         super().__init__()
 
-        if prenorm:
-            self.pre_fc_norm = RMSNorm(embed_dim)
-
+        self.pre_fc_norm = RMSNorm(embed_dim) if prenorm else None
         self.fc1 = nn.Linear(embed_dim, ffn_dim*2)
         self.act = GEGLU(ffn_dim) if activation == 'gelu' else nn.ReLU()
         self.act_dropout = nn.Dropout(activation_dropout)
