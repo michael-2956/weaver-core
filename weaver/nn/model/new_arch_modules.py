@@ -477,7 +477,9 @@ class AlteredBlock(nn.Module):
                       num_experts=N,
                       m=2,
                       num_shared_experts=1,
-                      gating_top_n=top_k,)
+                      gating_top_n=top_k,
+                      expert_scale_fc=scale_fc,
+                      expert_activation_dropout=activation_dropout)
             self.ffn = SparseMoEBlock(moe=moe)
         else:
             self.ffn = Expert(self.embed_dim, self.ffn_dim, activation, activation_dropout, scale_fc)
