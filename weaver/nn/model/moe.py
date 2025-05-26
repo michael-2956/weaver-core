@@ -530,7 +530,7 @@ class MoE(Module):
         # combine the losses
         total_aux_loss = weighted_balance_loss + weighted_router_z_loss
 
-        return MixtureOfExpertsReturn(combined_output, total_aux_loss.squeeze())
+        return MixtureOfExpertsReturn(combined_output.permute(1, 0, 2), total_aux_loss.squeeze())
 
 
 # sparse moe block
