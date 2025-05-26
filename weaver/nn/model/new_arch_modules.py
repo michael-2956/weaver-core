@@ -361,6 +361,9 @@ class EfficientAttention(nn.Module):
                     attn_mask = addidive_key_padding_mask
                 else:
                     # add them together
+                    logger.info(attn_mask.shape[0])
+                    logger.info(B)
+                    logger.info(self.num_heads)
                     assert attn_mask.shape[0] == B * self.num_heads
                     attn_mask = attn_mask.view(B, self.num_heads, Lq, Lkv)  # (B, num_heads, Lq, Lkv)
                     attn_mask = attn_mask + addidive_key_padding_mask       # add across all heads and queries
