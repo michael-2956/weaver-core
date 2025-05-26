@@ -486,7 +486,7 @@ class MoE(Module):
                                  scale_fc=expert_scale_fc,
                                  activation_dropout=expert_activation_dropout) for _ in range(num_shared_experts)]
 
-        self.shared_experts = ModuleList(shared_experts)
+        self.shared_experts = shared_experts
 
         self.balance_loss_coef = balance_loss_coef
         self.router_z_loss_coef = router_z_loss_coef
