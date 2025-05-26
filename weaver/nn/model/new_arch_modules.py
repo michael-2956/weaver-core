@@ -472,11 +472,11 @@ class AlteredBlock(nn.Module):
         self.use_moe = use_moe
         if self.use_moe:
             # self.ffn = MoEFFN(self.embed_dim, self.ffn_dim, logger, N, k_shared, m, top_k, device_count, expert_balance_alpha, device_balance_alpha, activation, activation_dropout, scale_fc)
+            experts = [Expert(embed_dim = self.embed_dim, ffn_dim = self.ffn_dim, activation_dropout=activation_dropout, scale_fc=scale_fc) for _ in range(N)]
             moe = MoE(self.embed_dim,
                       self.ffn_dim,
-                      num_experts=N,
-                      m=2,
-                      num_shared_experts=1,
+                      N,
+                      experts=experts,
                       gating_top_n=top_k,)
             self.ffn = SparseMoEBlock(moe=moe)
         else:
