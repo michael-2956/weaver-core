@@ -520,7 +520,7 @@ class MoE(Module):
 
         combined_output = shared_experts_output_tensor * shared_expert_output_multi \
                           + experts_output_tensor * expert_output_multi
-        print(f'size_out: {combined_output.size()}')
+        print(combined_output.size())
 
         # losses
         weighted_balance_loss = balance_loss * self.balance_loss_coef
