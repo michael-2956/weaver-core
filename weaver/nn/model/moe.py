@@ -303,6 +303,7 @@ class MoE(Module):
         self.ffn_dim = ffn_dim // m
         self.num_experts = num_experts * m - num_shared_experts
         self.top_n = num_experts_per_tok * m - num_shared_experts
+        self.n_shared_experts = num_shared_experts if num_shared_experts != 0 else None
 
         self.gate = MoEGate(embed_dim,
                             num_experts_per_tok=self.top_n,
