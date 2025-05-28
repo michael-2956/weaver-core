@@ -342,7 +342,7 @@ class MoE(Module):
             y = AddAuxiliaryLoss.apply(y, aux_loss)
         else:
             y = self.moe_infer(x, flat_topk_idx, topk_weight.view(-1, 1)).view(*orig_shape)
-        if self.config.n_shared_experts is not None:
+        if self.n_shared_experts is not None:
             y = y + self.shared_experts(identity)
         return y
 
