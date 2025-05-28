@@ -252,6 +252,7 @@ class AlteredBlock(nn.Module):
             m=2,
             top_k=2,
             seq_aux=True,
+            device_count=1
         ):
         super().__init__()
 
