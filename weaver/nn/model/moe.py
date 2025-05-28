@@ -334,7 +334,7 @@ class MoE(Module):
         flat_topk_idx = topk_idx.view(-1)
         if self.training:
             x = x.repeat_interleave(self.top_n, dim=0)
-            y = torch.empty_like(x)
+            y = torch.empty_like(x, dtype=torch.float16)
             for i, expert in enumerate(self.experts):
                 y[flat_topk_idx == i] = expert(x[flat_topk_idx == i])
             y = (y.view(*topk_weight.shape, -1) * topk_weight.unsqueeze(-1)).sum(dim=1)
