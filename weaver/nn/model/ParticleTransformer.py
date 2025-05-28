@@ -789,8 +789,6 @@ class ParticleTransformer(nn.Module):
                  m=2,
                  top_k=2,
                  device_count=1,
-                 expert_balance_alpha=0.01,
-                 device_balance_alpha=0.1,
                  # misc
                  trim=True,
                  trim_mode="random_cutoff_in_train",
@@ -852,8 +850,6 @@ class ParticleTransformer(nn.Module):
                            m=m,
                            top_k=top_k,
                            device_count=device_count,
-                           expert_balance_alpha=expert_balance_alpha,
-                           device_balance_alpha=device_balance_alpha,
                            logger=_logger
                            )
 
