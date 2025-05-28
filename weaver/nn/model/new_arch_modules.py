@@ -35,204 +35,6 @@ class FFNBlockSection(nn.Module):
         x = self.fc2(x)
         return x, None, None
 
-class MoEFFN(nn.Module):
-    def __init__(self,
-                 # MoE params
-                 embed_dim,
-                 ffn_dim,
-                 logger,
-                 N=16,
-                 k_shared=1,
-                 m=2,
-                 top_k=2,
-                 device_count=1,
-                 expert_balance_alpha=0.01,
-                 device_balance_alpha=0.1,
-                 # Expert params
-                 activation='gelu',
-                 activation_dropout=0.1,
-                 scale_fc=True):
-        """
-        Mixture-of-Experts block replacing a standard FFN.
-        - N: total number of experts (part of m * N in DeepSeekMoE).
-        - k_shared: number of shared experts always activated.
-        - m: fine-graining scalar, by which we 'split' every expert, and multiply their total number
-        - top_k: total number of experts activated per token (K, including shared).
-        - device_count: number of device groups for experts (for device-level balancing).
-        - expert_balance_alpha: α₁ coefficient for expert-level load balance loss.
-        - device_balance_alpha: α₂ coefficient for device-level load balance loss.
-        """
-        super().__init__()
-        assert 0 <= k_shared < N, "k_shared must be less than total experts"
-        assert top_k > k_shared, "top_k must be greater than k_shared (at least one routed expert)"
-        assert m >= 1, "m must be greater than 1"
-        assert int(m) == m, "m must be an int"
-        self.num_experts = m * N
-        self.expert_dim = math.ceil(ffn_dim / m)
-        self.k_shared = k_shared
-        self.route_experts = self.num_experts - self.k_shared # total experts that can be routed
-        self.top_k = m * top_k                      # total experts used per token (shared + routed)
-        self.k_route = self.top_k - self.k_shared             # number of experts chosen by gating (excluding shared)
-        self.device_count = device_count
-
-        self.k_route_tensor = torch.tensor(self.k_route, dtype=torch.float, device='cuda')
-        self.route_experts_tensor = torch.tensor(self.route_experts, dtype=torch.float, device='cuda')
-        self.expert_balance_alpha_tensor = torch.tensor(expert_balance_alpha, dtype=torch.float, device='cuda')
-        self.device_balance_alpha_tensor = torch.tensor(device_balance_alpha, dtype=torch.float, device='cuda')
-
-        # Gating network: a linear layer that outputs a score for each expert.
-        # (Bias is allowed; it can learn an offset for each expert's logit.)
-        self.gate = nn.Linear(embed_dim, self.route_experts)
-
-        # Expert networks: Each expert is a two-layer feed-forward (FFN) with GELU.
-        self.shared_experts = nn.ModuleList([
-            FFNBlockSection(embed_dim, self.expert_dim, activation, activation_dropout, scale_fc)
-            for _ in range(self.k_shared)
-        ])
-        
-        self.experts = nn.ModuleList([
-            FFNBlockSection(embed_dim, self.expert_dim, activation, activation_dropout, scale_fc)
-            for _ in range(self.route_experts)
-        ])
-
-        self.logger = logger
-
-        # Define grouping of experts into devices for device-level loss calculation.
-        # We'll assign routed experts (indices k_shared ... num_experts-1) evenly to `device_count` groups.
-        self.expert_group = []
-        if device_count > 1:
-            base = self.route_experts // device_count
-            extra = self.route_experts % device_count
-            start_idx = k_shared
-            for d in range(device_count):
-                group_size = base + (1 if d < extra else 0)
-                group_experts = list(range(start_idx, start_idx + group_size))
-                self.expert_group.append(group_experts)
-                start_idx += group_size
-        else:
-            # All experts (or all routed experts) on one device group
-            self.expert_group = [list(range(k_shared, self.num_experts))]
-
-    def forward(self, x):
-        """
-        x: (seq_len, batch, embed_dim)
-        
-        Forward pass of MoE block.
-        Returns a tuple: (output, expert_balance_loss, device_balance_loss)
-        """
-        log_verbose = False
-        seq_len, batch_size, embed_dim = x.size()
-        # Flatten batch and sequence into one dimension for routing
-        x_flat = x.reshape(batch_size * seq_len, embed_dim)  # shape [T, d] where T = batch_size * seq_len
-
-        # Compute gating scores for all experts
-        gate_scores = self.gate(x_flat)  # shape [T, num_experts]
-        # Exclude shared experts from routing selection by masking their scores (they will be added deterministically)
-        # Compute softmax probabilities for gating (over all experts, shared ones effectively ~0 after masking)
-        gate_probs = torch.softmax(gate_scores, dim=-1)  # shape [T, num_experts]
-
-        # Select top-k_route experts for each token (these are indices >= k_shared due to masking)
-        # torch.topk returns the top values and indices along the last dimension
-        topk_vals, topk_idx = torch.topk(gate_probs, self.k_route, dim=-1)  # shapes [T, k_route]
-
-        # Initialize output contributions (on flattened tokens)
-        output_flat = torch.zeros_like(x_flat, dtype=torch.float16)  # [T, d]
-        
-        if log_verbose:
-            self.logger.info('Running shared experts')
-        # Always-on shared experts: compute their output for all tokens and add.
-        for expert in self.shared_experts:
-            res, _, _ = expert(x_flat)
-            output_flat += res
-
-        if log_verbose:
-            self.logger.info('Sorting and indexing')
-        # Routed experts: for each token, we have selected expert indices in topk_idx
-        # We will gather tokens per expert and apply the expert.
-        T = x_flat.size(0)
-        # Flatten token indices and corresponding expert selections
-        token_indices = torch.arange(T, device=x.device).unsqueeze(1).expand(-1, self.k_route)  # [T, k_route]
-        flat_tokens = token_indices.reshape(-1)   # [T * k_route]
-        flat_experts = topk_idx.reshape(-1)       # [T * k_route]
-        flat_gates = topk_vals.reshape(-1)        # [T * k_route]
-
-        # Sort the selections by expert index to process tokens expert-by-expert
-        sorted_idx = torch.argsort(flat_experts)
-        flat_experts_sorted = flat_experts[sorted_idx]   # sorted expert indices
-        flat_tokens_sorted = flat_tokens[sorted_idx]     # corresponding token indices
-        flat_gates_sorted = flat_gates[sorted_idx]       # corresponding gate values
-        
-        expert_idxs, expert_token_counts = torch.unique_consecutive(flat_experts_sorted, return_counts=True)
-        boundaries = torch.cumsum(expert_token_counts, dim=0)
-        expert_idxs_cpu, boundaries_cpu = expert_idxs.tolist(), boundaries.tolist()
-        expert_indices = {}       # jagged list of token idxs for each expert
-        left = 0
-        for i, expert_idx in enumerate(expert_idxs_cpu):
-            right = boundaries_cpu[i]
-            expert_indices[expert_idx] = flat_tokens_sorted[left:right]
-            left = right
-        
-        if log_verbose:
-            self.logger.info('Running top-k')
-        for expert_idx in expert_idxs_cpu:
-            expert_index_set = expert_indices[expert_idx]
-            gate_batch = flat_gates_sorted[expert_index_set].unsqueeze(1)  # shape [num_tokens_for_exp, 1]
-            # Run the expert FFN on all these tokens at once
-            expert_out, _, _ = self.experts[expert_idx](x_flat[expert_index_set])  # shape [num_tokens_for_exp, d]
-            # Multiply outputs by their respective gate weights
-            expert_out *= gate_batch  # broadcast multiply each vector by the scalar weight
-            # Add the weighted outputs to the respective token positions in output_flat
-            output_flat.index_add_(0, expert_index_set, expert_out)
-
-        output = output_flat.view(seq_len, batch_size, embed_dim)
-
-        if log_verbose:
-            self.logger.info('Computing losses')
-        # **Compute Load-Balancing Losses** (expert-level and device-level):
-        T_float_tensor = torch.tensor(T, device='cuda', dtype=torch.float)
-        if self.training:
-            # Calculate f_i (fraction of tokens) and p_i (average gate probability) for each routed expert.
-            # Count how many times each expert index appears in flat_experts (i.e., selected for some token)
-            expert_selection_counts = torch.bincount(flat_experts, minlength=self.route_experts)
-            # We only care about routed experts (shared experts usage is deterministic, exclude them from balance loss)
-            expert_selection_counts = expert_selection_counts
-            # Fraction of tokens for expert i: f_i = (N' / (K' * T)) * (#tokens routed to i)
-            K_prime = self.k_route_tensor  # number of experts chosen per token (excluding shared)
-            T_float = T_float_tensor
-            f = (self.route_experts_tensor / (K_prime * T_float)) * expert_selection_counts.float()  # shape [N']
-            # Average gating probability for expert i: p_i = (1/T) * sum_{t} s_{i,t}
-            # Sum gating probs for each expert over all tokens:
-            total_probs_per_expert = gate_probs.sum(dim=0)  # shape [num_experts]
-            total_probs_per_expert = total_probs_per_expert
-            p = total_probs_per_expert / T_float  # shape [N']
-
-            # Expert-level balance loss: α1 * sum_i f_i * p_i
-            expert_balance_loss = self.expert_balance_alpha_tensor * (f * p).sum()
-
-            # Device-level balance loss: α2 * sum_{device=1..D} f'_d * p'_d
-            if self.device_count > 1:
-                # Compute f'_d and p'_d for each device group
-                f_group = torch.zeros(self.device_count, device=x.device)
-                p_group = torch.zeros(self.device_count, device=x.device)
-                # Sum f and p for experts in each group
-                for d_idx, exp_indices in enumerate(self.expert_group):
-                    if len(exp_indices) == 0:
-                        continue
-                    # Convert global expert indices to indices in f/p array (subtract k_shared)
-                    routed_indices = [j - self.k_shared for j in exp_indices if j >= self.k_shared]
-                    if len(routed_indices) == 0:
-                        continue
-                    f_group[d_idx] = f[routed_indices].mean()   # average f for group d
-                    p_group[d_idx] = p[routed_indices].sum()    # total p for group d
-                device_balance_loss = self.device_balance_alpha_tensor * (f_group * p_group).sum()
-            else:
-                device_balance_loss = torch.tensor(0.0, device=x.device)
-        else:
-            expert_balance_loss = torch.tensor(0.0, device=x.device)
-            device_balance_loss = torch.tensor(0.0, device=x.device)
-        logger.info('=========================================')
-        return output, expert_balance_loss, device_balance_loss
-
 class EfficientAttention(nn.Module):
     """
     A drop-in replacement for nn.MultiheadAttention that uses
@@ -449,9 +251,7 @@ class AlteredBlock(nn.Module):
             k_shared=1,
             m=2,
             top_k=2,
-            device_count=1,
-            expert_balance_alpha=0.01,
-            device_balance_alpha=0.1
+            seq_aux=True,
         ):
         super().__init__()
 
@@ -471,15 +271,15 @@ class AlteredBlock(nn.Module):
         self.pre_fc_norm = nn.LayerNorm(embed_dim)
         self.use_moe = use_moe
         if self.use_moe:
-            # self.ffn = MoEFFN(self.embed_dim, self.ffn_dim, logger, N, k_shared, m, top_k, device_count, expert_balance_alpha, device_balance_alpha, activation, activation_dropout, scale_fc)
             moe = MoE(self.embed_dim,
                       self.ffn_dim,
                       num_experts=N,
-                      m=2,
-                      num_shared_experts=1,
-                      gating_top_n=top_k,
+                      num_experts_per_tok=top_k,
+                      num_shared_experts=k_shared,
+                      m=m,
                       expert_scale_fc=scale_fc,
-                      expert_activation_dropout=activation_dropout)
+                      expert_activation_dropout=activation_dropout,
+                      seq_aux=seq_aux)
             self.ffn = SparseMoEBlock(moe=moe)
         else:
             self.ffn = Expert(self.embed_dim, self.ffn_dim, activation, activation_dropout, scale_fc)
@@ -562,10 +362,9 @@ class AlteredBlock(nn.Module):
         # ============ MOE Section ============
         if self.use_moe:
             # logger.info(f'MoE ffn started')
-            x, loss = self.ffn(x)
+            x = self.ffn(x)
         else:
-            x, _ = self.ffn(x)
-            loss = torch.tensor(0.0, device=x.device)
+            x = self.ffn(x)
         # ============ MOE Section ============
         
         x = self.dropout(x)
@@ -575,7 +374,7 @@ class AlteredBlock(nn.Module):
         # ============ FFN Section ============
 
         if return_final_attn_weight:
-            return x, attn_weight, loss
+            return x, attn_weight
         else:
-            return x, None, loss
+            return x, None
 

@@ -88,10 +88,9 @@ def train_classification(
                 mask = None
             opt.zero_grad(set_to_none=False)
             with torch.autocast('xla' if dev == 'xla' else 'cuda', enabled=grad_scaler is not None):
-                model_output, moe_loss = model(*inputs)
+                model_output = model(*inputs)
                 logits, label, _ = _flatten_preds(model_output, label=label, mask=mask)
                 loss = loss_func(logits, label)
-                loss += moe_loss
                 i += 1
             if grad_scaler is None:
                 loss.backward()
@@ -196,7 +195,7 @@ def evaluate_classification(model, test_loader, dev, epoch, for_training=True, l
                     mask = y[data_config.label_names[0] + '_mask'].bool().to(dev)
                 except KeyError:
                     mask = None
-                model_output, _ = model(*inputs)
+                model_output = model(*inputs)
                 logits, label, mask = _flatten_preds(model_output, label=label, mask=mask)
                 scores.append(torch.softmax(logits.float(), dim=1).numpy(force=True))
 

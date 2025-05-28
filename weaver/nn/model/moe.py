@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from functools import partial
 from collections import namedtuple
 from typing import Tuple, List
@@ -105,7 +106,6 @@ def gumbel_noise(t):
     noise = torch.zeros_like(t).uniform_(0, 1)
     return -log(-log(noise))
 
-
 def safe_one_hot(indexes, max_length):
     """
     PyTorch one hot throws an error if there are out of bound indices.
@@ -116,14 +116,21 @@ def safe_one_hot(indexes, max_length):
     return F.one_hot(indexes, one_hot_classes)[..., :max_length]
 
 
-class RMSNorm(Module):
-    def __init__(self, dim):
+class DeepseekRMSNorm(nn.Module):
+    def __init__(self, embed_dim, eps=1e-6):
+        """
+        DeepseekRMSNorm is equivalent to T5LayerNorm
+        """
         super().__init__()
-        self.scale = dim ** 0.5
-        self.gamma = nn.Parameter(torch.ones(dim))
+        self.weight = nn.Parameter(torch.ones(embed_dim))
+        self.variance_epsilon = eps
 
     def forward(self, x):
-        return F.normalize(x, dim=-1) * self.gamma * self.scale
+        input_dtype = x.dtype
+        x = x.to(torch.float32)
+        variance = x.pow(2).mean(-1, keepdim=True)
+        x = x * torch.rsqrt(variance + self.variance_epsilon)
+        return self.weight * x.to(input_dtype)
 
 
 class GEGLU(Module):
@@ -144,6 +151,94 @@ class GEGLU(Module):
         return F.gelu(gate) * x * self.mult_bias
 
 
+class MoEGate(nn.Module):
+    def __init__(self,
+                 embed_dim,
+                 num_experts_per_tok=3,
+                 n_routed_experts=31,
+                 scoring_func='softmax',
+                 aux_loss_alpha=0.001,
+                 seq_aux=True,
+                 norm_topk_prob=True):
+        super().__init__()
+        self.top_k = num_experts_per_tok
+        self.n_routed_experts = n_routed_experts
+
+        self.scoring_func = scoring_func
+        self.alpha = aux_loss_alpha
+        self.seq_aux = seq_aux
+
+        # topk selection algorithm
+        self.norm_topk_prob = norm_topk_prob
+        self.embed_dim = embed_dim
+        self.weight = nn.Parameter(torch.empty((self.n_routed_experts, self.embed_dim)))
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        import torch.nn.init as init
+        init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+
+    def forward(self, x):
+        seq_len, bsz, embed_dim = x.shape
+        ### compute gating score
+        logits = F.linear(x.view(-1, embed_dim), self.weight, None)
+        if self.scoring_func == 'softmax':
+            scores = logits.softmax(dim=-1)
+        else:
+            raise NotImplementedError(f'insupportable scoring function for MoE gating: {self.scoring_func}')
+
+        ### select top-k experts
+        topk_weight, topk_idx = torch.topk(scores, k=self.top_k, dim=-1, sorted=False)
+
+        ### norm gate to sum 1
+        if self.top_k > 1 and self.norm_topk_prob:
+            denominator = topk_weight.sum(dim=-1, keepdim=True) + 1e-20
+            topk_weight = topk_weight / denominator
+
+        ### expert-level computation auxiliary loss
+        if self.training and self.alpha > 0.0:
+            scores_for_aux = scores
+            aux_topk = self.top_k
+            # always compute aux loss based on the naive greedy topk method
+            topk_idx_for_aux_loss = topk_idx.view(bsz, -1)
+            if self.seq_aux:
+                scores_for_seq_aux = scores_for_aux.view(bsz, seq_len, -1)
+                ce = torch.zeros(bsz, self.n_routed_experts, device=x.device)
+                ce.scatter_add_(1, topk_idx_for_aux_loss,
+                                torch.ones(bsz, seq_len * aux_topk, device=x.device)).div_(
+                    seq_len * aux_topk / self.n_routed_experts)
+                aux_loss = (ce * scores_for_seq_aux.mean(dim=1)).sum(dim=1).mean() * self.alpha
+            else:
+                mask_ce = F.one_hot(topk_idx_for_aux_loss.view(-1), num_classes=self.n_routed_experts)
+                ce = mask_ce.float().mean(0)
+                Pi = scores_for_aux.mean(0)
+                fi = ce * self.n_routed_experts
+                aux_loss = (Pi * fi).sum() * self.alpha
+        else:
+            aux_loss = None
+        return topk_idx, topk_weight, aux_loss
+
+
+class AddAuxiliaryLoss(torch.autograd.Function):
+    """
+    The trick function of adding auxiliary (aux) loss,
+    which includes the gradient of the aux loss during backpropagation.
+    """
+    @staticmethod
+    def forward(ctx, x, loss):
+        assert loss.numel() == 1
+        ctx.dtype = loss.dtype
+        ctx.required_aux_loss = loss.requires_grad
+        return x
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        grad_loss = None
+        if ctx.required_aux_loss:
+            grad_loss = torch.ones(1, dtype=ctx.dtype, device=grad_output.device)
+        return grad_output, grad_loss
+
+
 class Expert(Module):
     """
     An 'Expert' feedforward network
@@ -158,7 +253,7 @@ class Expert(Module):
                  scale_fc=True):
         super().__init__()
 
-        self.pre_fc_norm = RMSNorm(embed_dim) if prenorm else None
+        self.pre_fc_norm = DeepseekRMSNorm(embed_dim) if prenorm else None
         self.fc1 = nn.Linear(embed_dim, ffn_dim * 2)
         self.act = GEGLU(ffn_dim) if activation == 'gelu' else nn.ReLU()
         self.act_dropout = nn.Dropout(activation_dropout)
@@ -189,346 +284,84 @@ class Expert(Module):
         x = self.fc2(x)
         return x
 
-
-class Experts(Module):
-    def __init__(
-            self,
-            experts,
-            allow_var_seq_len=False  # whether to handle variable sequence length
-    ):
-        super().__init__()
-        self.num_experts = len(experts)
-        self.experts = ModuleList(experts)
-
-        self.allow_var_seq_len = allow_var_seq_len
-
-    def forward(self, x):
-        """
-        einops notation:
-        b - batch
-        e - experts
-        n - sequence (number of tokens per expert)
-        d - feature dimension
-        """
-
-        shape, num_experts = x.shape, self.num_experts
-        # set the expert dimension first, so torch can fuse calls-per-expert
-        x = rearrange(x, 'b e n d -> e b n d')
-        outs = []
-
-        # call each expert sequentially
-        for expert, expert_input in zip(self.experts, x):
-            out = expert(expert_input)
-            outs.append(out)
-
-        # gather outputs from all experts
-        if len(outs) > 0:
-            outs = torch.stack(outs)
-        else:
-            outs = torch.empty_like(x, requires_grad=self.training)
-
-        # split the batch dimension back first
-        outs = rearrange(outs, 'e b n d -> b e n d')
-        assert outs.shape == shape
-        return outs
-
-
-# the below code is almost all transcribed from the official tensorflow version, from which the papers are written
-# https://github.com/tensorflow/tensor2tensor/blob/master/tensor2tensor/models/research/moe.py
-
-# gating network
-
-class TopNGating(Module):
-    @beartype
-    def __init__(
-            self,
-            dim,
-            num_gates,
-            eps=1e-9,
-            top_n=2,
-            threshold_train: float | Tuple[float, ...] = 0.2,
-            threshold_eval: float | Tuple[float, ...] = 0.2,
-            capacity_factor_train=1.25,
-            capacity_factor_eval=2.,
-            straight_through_dispatch_tensor=True,
-            differentiable_topk=False,
-            differentiable_topk_fused=True
-    ):
-        super().__init__()
-        self.eps = eps
-        self.num_gates = num_gates
-        self.to_gates = nn.Linear(dim, num_gates, bias=False)
-
-        self.differentiable_topk = differentiable_topk
-
-        self.topk = partial(
-            maybe_differentiable_topk,
-            non_differentiable=not differentiable_topk,
-            fused=differentiable_topk_fused  # use triton fused coordinate descent if possible by default
-        )
-
-        assert top_n >= 2, 'must be 2 or more experts'
-        self.top_n = top_n
-        top_n_minus_1 = top_n - 1
-
-        threshold_train = cast_tuple(threshold_train, top_n_minus_1)
-        threshold_eval = cast_tuple(threshold_eval, top_n_minus_1)
-
-        assert len(threshold_train) == len(threshold_eval) == top_n_minus_1
-
-        self.register_buffer('threshold_train', torch.tensor([eps, *threshold_train]))
-        self.register_buffer('threshold_eval', torch.tensor([eps, *threshold_eval]))
-
-        self.capacity_factor_train = capacity_factor_train
-        self.capacity_factor_eval = capacity_factor_eval
-
-        self.straight_through_dispatch_tensor = straight_through_dispatch_tensor
-        self.register_buffer('zero', torch.zeros((1,)), persistent=False)
-
-    def forward(
-            self,
-            x,
-            noise_gates=False,
-            noise_mult=1.
-    ):
-        """
-        einstein notation:
-
-        b - batch
-        n - sequence
-        e - experts
-        k - top-n experts
-        c - capacity
-        """
-
-        # x arrives as [*, b, n, dim]
-        *_, b, group_size, dim, dtype, top_n, num_gates, eps = *x.shape, x.dtype, self.top_n, self.num_gates, self.eps
-
-        # threshold, capacity depending on training or eval
-        suffix = 'train' if self.training else 'eval'
-        threshold = getattr(self, f'threshold_{suffix}')
-        capacity_factor = getattr(self, f'capacity_factor_{suffix}')
-
-        # Each sequence sends (at most?) expert_capacity positions to each expert.
-        # Static expert_capacity dimension is needed for expert batch sizes
-        expert_capacity = min(group_size, int((group_size * capacity_factor) / num_gates))
-        expert_capacity = max(expert_capacity, MIN_EXPERT_CAPACITY)
-        expert_capacity_f = float(expert_capacity)
-
-        # gate logits and gates
-        gate_logits = self.to_gates(x)
-        maybe_noised_gate_logits = gate_logits
-        if noise_gates:
-            noise = gumbel_noise(maybe_noised_gate_logits)
-            maybe_noised_gate_logits = maybe_noised_gate_logits + noise * noise_mult
-
-        # find top N experts per token
-        raw_gates = maybe_noised_gate_logits.softmax(dim=-1)  # [b, n, e]
-        topk_return = self.topk(raw_gates, k=top_n)  # [b, n, k]
-        gate_indices = topk_return.indices
-        if self.differentiable_topk:
-            # allow for differentiable topk using coordinate descent
-            # used successfully for routing from CoLT5 paper https://github.com/lucidrains/CoLT5-attention
-            gates = topk_return.coor_descent_values
-        else:
-            gates = topk_return.values
-
-        # move the top-n dimension to be first, so experts are easier to batch
-        gates = rearrange(gates, '... k -> k ...')  # [k, b, n]
-        gate_indices = rearrange(gate_indices, '... k -> k ...')  # [k, b, n]
-
-        # masks
-        one_hot_gate_indices = F.one_hot(gate_indices,
-                                         num_gates)  # [k, b, n, e], where k - top-Kth expert, e - 1-hot vector with '1' at the index of top-Kth expert and 0s elsewhere
-        mask = one_hot_gate_indices.float()
-        mask_1 = mask[0]  # needed for balancing loss
-
-        # re-normalize top-k (because some values were masked)
-        denom = reduce(gates, 'k ... -> 1 ...', 'sum').clamp(min=eps)
-        gates = gates / denom
-
-        # best performing policy was to route to the second expert, with probability of min(1., score / threshold), where score = gate2 / (gate1 + gate2)
-        # optimal threshold was ~ 0.2
-        # generalized to more than 2 experts
-        probs = torch.zeros_like(gates).uniform_(0., 1.)
-        should_route = probs < einx.divide('k b n, k -> k b n', gates, threshold.clamp(min=eps))
-
-        # tokens should always be routed to first expert
-        # threshold for first expert already set to very small number, but just in case
-        should_route[0, ...] = True
-        mask *= rearrange(should_route.float(), '... -> ... 1')
-        mask_cumsum = cumsum_exclusive(mask, dim=-2)  # along sequence dimension
-
-        # compute assignment to experts - (batch, seq, experts)
-        # This is the position within the expert's mini-batch for this sequence
-        positions = []
-        prev_expert_count = 0.
-
-        # Iterate over top_n positions
-        for n in range(self.top_n):
-            # Find out top-Nth experts for each token position
-            position_in_expert = (mask_cumsum[n] + prev_expert_count) * mask[n]
-
-            # Remove the elements that don't fit (never applicable for the top-1 expert)
-            mask[n] *= (position_in_expert < expert_capacity_f).float()
-
-            # Find out how many tokens so far have come to each expert
-            prev_expert_count = reduce(mask[n], '... n e -> ... 1 e', 'sum') + prev_expert_count
-
-            # compute how many tokens have already been routed to every expert
-            position_in_expert = reduce(position_in_expert, '... n e -> ... n', 'sum')  # [b, n]
-            positions.append(position_in_expert)
-
-        positions = torch.stack(positions)
-
-        # mostly ones, but zeros where something didn't fit
-        mask_flat = reduce(mask, '... n e -> ... n', 'sum')  # [k, b, n]
-
-        # (batch, sequence, experts, expert_capacity)
-        combine_tensor = einx.multiply(
-            'k b n, k b n, k b n e, k b n c -> k b n e c',
-            gates,
-            mask_flat,
-            one_hot_gate_indices,
-            safe_one_hot(positions.long(), expert_capacity)
-        )
-
-        combine_tensor = reduce(combine_tensor, 'k b n e c -> b n e c', 'sum')
-        dispatch_tensor = combine_tensor.bool().type(dtype)
-
-        if self.straight_through_dispatch_tensor:
-            dispatch_tensor = dispatch_tensor + combine_tensor - combine_tensor.detach()
-
-        # balance losses - (batch, experts)
-        # We want to equalize the fraction of the batch assigned to each expert
-
-        if self.training:
-            density_1 = reduce(mask_1, '... n e -> ... e', 'mean')
-            density_1_proxy = reduce(raw_gates, '... n e -> ... e',
-                                     'mean')  # Something continuous that is correlated with what we want to equalize.
-
-            balance_loss = (density_1_proxy * density_1).mean() * float(num_gates ** 2)
-        else:
-            balance_loss = self.zero
-
-        # calculate the router z-loss proposed in paper
-
-        if self.training:
-            router_z_loss = torch.logsumexp(gate_logits, dim=-1)
-            router_z_loss = torch.square(router_z_loss)
-            router_z_loss = router_z_loss.mean()
-        else:
-            router_z_loss = self.zero
-
-        return dispatch_tensor, combine_tensor, balance_loss, router_z_loss
-
-
 # plain mixture of experts
-
 class MoE(Module):
     @beartype
     def __init__(self,
                  embed_dim,
                  ffn_dim,
                  num_experts=16,
-                 threshold_train=0.2,
-                 threshold_eval=0.2,
-                 capacity_factor_train=1.25,
-                 capacity_factor_eval=2.,
-                 gating_top_n=2,
-                 balance_loss_coef=1e-2,
-                 router_z_loss_coef=1e-3,
-                 m=2,
+                 num_experts_per_tok=2,
                  num_shared_experts=1,
-                 straight_through_dispatch_tensor=True,
-                 differentiable_topk=False,
-                 differentiable_topk_fused=True,
-                 allow_var_seq_len=False,
+                 m=2,
                  expert_scale_fc=False,
-                 expert_activation_dropout=0.1
+                 expert_activation_dropout=0.1,
+                 seq_aux=True,
                  ):
         super().__init__()
         self.embed_dim = embed_dim
         self.ffn_dim = ffn_dim // m
         self.num_experts = num_experts * m - num_shared_experts
-        self.top_n = gating_top_n * m - num_shared_experts
+        self.top_n = num_experts_per_tok * m - num_shared_experts
 
-        self.gate = TopNGating(
-            embed_dim,
-            top_n=self.top_n,
-            num_gates=self.num_experts,
-            straight_through_dispatch_tensor=straight_through_dispatch_tensor,
-            differentiable_topk=differentiable_topk,
-            differentiable_topk_fused=differentiable_topk_fused,
-            threshold_train=threshold_train,
-            threshold_eval=threshold_eval,
-            capacity_factor_train=capacity_factor_train,
-            capacity_factor_eval=capacity_factor_eval
-        )
+        self.gate = MoEGate(embed_dim,
+                            num_experts_per_tok=self.top_n,
+                            n_routed_experts=self.num_experts,
+                            scoring_func='softmax',
+                            aux_loss_alpha=0.001,
+                            seq_aux=seq_aux,
+                            norm_topk_prob=True)
 
-        experts = [Expert(embed_dim=self.embed_dim,
-                          ffn_dim=self.ffn_dim,
-                          scale_fc=expert_scale_fc,
-                          activation_dropout=expert_activation_dropout) for _ in range(self.num_experts)]
+        self.experts = nn.ModuleList([Expert(embed_dim=self.embed_dim,
+                                      ffn_dim=self.ffn_dim,
+                                      scale_fc=expert_scale_fc,
+                                      activation_dropout=expert_activation_dropout)
+                                  for _ in range(self.num_experts)])
 
-        self.experts = Experts(
-            experts,
-            allow_var_seq_len=allow_var_seq_len
-        )
+        if self.n_shared_experts is not None:
+            batched_ffn_dim = ffn_dim * self.n_shared_experts
+            self.shared_experts = Expert(embed_dim=self.embed_dim,
+                                         ffn_dim=batched_ffn_dim,
+                                         scale_fc=expert_scale_fc,
+                                         activation_dropout=expert_activation_dropout)
 
-        self.register_buffer('expert_output_multi',
-                             torch.tensor(self.num_experts / (self.num_experts + num_shared_experts)).float())
-        self.register_buffer('shared_expert_output_multi',
-                             torch.tensor(num_shared_experts / (self.num_experts + num_shared_experts)).float())
+    def forward(self, x):
+        identity = x
+        orig_shape = x.shape
+        topk_idx, topk_weight, aux_loss = self.gate(x)
+        x = x.view(-1, x.shape[-1])
+        flat_topk_idx = topk_idx.view(-1)
+        if self.training:
+            x = x.repeat_interleave(self.num_experts_per_tok, dim=0)
+            y = torch.empty_like(x)
+            for i, expert in enumerate(self.experts):
+                y[flat_topk_idx == i] = expert(x[flat_topk_idx == i])
+            y = (y.view(*topk_weight.shape, -1) * topk_weight.unsqueeze(-1)).sum(dim=1)
+            y = y.view(*orig_shape)
+            y = AddAuxiliaryLoss.apply(y, aux_loss)
+        else:
+            y = self.moe_infer(x, flat_topk_idx, topk_weight.view(-1, 1)).view(*orig_shape)
+        if self.config.n_shared_experts is not None:
+            y = y + self.shared_experts(identity)
+        return y
 
-        shared_experts = [Expert(embed_dim=self.embed_dim,
-                                 ffn_dim=self.ffn_dim,
-                                 scale_fc=expert_scale_fc,
-                                 activation_dropout=expert_activation_dropout) for _ in range(num_shared_experts)]
-
-        self.shared_experts = ModuleList(shared_experts)
-
-        self.balance_loss_coef = balance_loss_coef
-        self.router_z_loss_coef = router_z_loss_coef
-
-    def forward(
-            self,
-            x,  # [n, b, d]
-            noise_gates=False,
-            noise_mult=1.
-    ):
-        x_reshaped = x.permute(1, 0, 2)  # [n, b, d] -> [b, n, d]
-        dispatch_tensor, combine_tensor, balance_loss, router_z_loss = self.gate(x_reshaped, noise_gates=noise_gates,
-                                                                                 noise_mult=noise_mult)
-
-        # dispatch
-        expert_inputs = einsum('b n d, b n e c -> b e c d', x_reshaped, dispatch_tensor)
-
-        # feed the expert inputs through the experts.
-        expert_outputs = self.experts(expert_inputs)
-
-        # combine
-        experts_output_tensor = einsum('b e c d, b n e c -> b n d', expert_outputs, combine_tensor)  # [b, n, d]
-        expert_output_multi = getattr(self, 'expert_output_multi')
-
-        shared_experts_output = []
-        for expert in self.shared_experts:
-            shared_experts_output.append(expert(x_reshaped))
-
-        shared_experts_output_tensor = torch.stack(shared_experts_output, dim=-1).sum(dim=-1)
-        shared_expert_output_multi = getattr(self, 'shared_expert_output_multi')
-
-        combined_output = shared_experts_output_tensor * shared_expert_output_multi \
-                          + experts_output_tensor * expert_output_multi
-
-        # losses
-        weighted_balance_loss = balance_loss * self.balance_loss_coef
-        weighted_router_z_loss = router_z_loss * self.router_z_loss_coef
-
-        # combine the losses
-        total_aux_loss = weighted_balance_loss + weighted_router_z_loss
-
-        return MixtureOfExpertsReturn(combined_output.permute(1, 0, 2), total_aux_loss.squeeze())
+    @torch.no_grad()
+    def moe_infer(self, x, flat_expert_indices, flat_expert_weights):
+        expert_cache = torch.zeros_like(x)
+        idxs = flat_expert_indices.argsort()
+        tokens_per_expert = flat_expert_indices.bincount().cpu().numpy().cumsum(0)
+        token_idxs = idxs // self.num_experts_per_tok
+        for i, end_idx in enumerate(tokens_per_expert):
+            start_idx = 0 if i == 0 else tokens_per_expert[i - 1]
+            if start_idx == end_idx:
+                continue
+            expert = self.experts[i]
+            exp_token_idx = token_idxs[start_idx:end_idx]
+            expert_tokens = x[exp_token_idx]
+            expert_out = expert(expert_tokens)
+            expert_out.mul_(flat_expert_weights[idxs[start_idx:end_idx]])
+            expert_cache.scatter_reduce_(0, exp_token_idx.view(-1, 1).repeat(1, x.shape[-1]), expert_out, reduce='sum')
+        return expert_cache
 
 
 # sparse moe block
@@ -547,7 +380,7 @@ class SparseMoEBlock(Module):
         ffn_dim = moe.ffn_dim
 
         self.moe = moe
-        self.moe_prenorm = RMSNorm(embed_dim)
+        self.moe_prenorm = DeepseekRMSNorm(embed_dim)
 
         self.ff_before = Expert(embed_dim, ffn_dim=ffn_dim, prenorm=True) if add_ff_before else None
         self.ff_after = Expert(embed_dim, ffn_dim=ffn_dim, prenorm=True) if add_ff_after else None

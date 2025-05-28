@@ -961,9 +961,7 @@ class ParticleTransformer(nn.Module):
             if self.uniformly_add_nblocks is not None:
                 num_blocks += torch.randint(self.uniformly_add_nblocks + 1, size=(1,))[0].item()
 
-            moe_loss_total = torch.tensor(0.0, device=x.device)
             for bi in range(num_blocks):
-                moe_loss = torch.tensor(0.0, device=x.device)
                 if self.identical_attn_weights:
                     block = self.blocks[0]
                 else:
@@ -999,7 +997,7 @@ class ParticleTransformer(nn.Module):
                     qk_attn_weights_list.append(qk_attn_weight_logits.detach().cpu())
                 
                 if self.pemb_needs_prev_attn_w:
-                    x, attn_weights, moe_loss = block(
+                    x, attn_weights = block(
                         x, x_cls=None, padding_mask=padding_mask,
                         attn_mask=attn_mask, return_final_attn_weight=True
                     )
@@ -1007,11 +1005,10 @@ class ParticleTransformer(nn.Module):
                         attn_weights_list.append(attn_weights.detach().cpu())
                 else:
                     if self.return_qk_final_U_attn_weights:
-                        x, attn_weights, moe_loss = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask, return_final_attn_weight=True)
+                        x, attn_weights = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask, return_final_attn_weight=True)
                         attn_weights_list.append(attn_weights.detach().cpu())
                     else:
-                        x, attn_weights, moe_loss = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask)
-                moe_loss_total += moe_loss
+                        x, attn_weights = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask)
 
             # extract class token
             cls_tokens = self.cls_token.expand(1, x.size(1), -1)  # (1, N, C)
@@ -1020,8 +1017,7 @@ class ParticleTransformer(nn.Module):
                     cls_block = self.cls_blocks[0]
                 else:
                     cls_block = self.cls_blocks[cbi]
-                cls_tokens, attn_weights, moe_loss = cls_block(x, x_cls=cls_tokens, padding_mask=padding_mask)
-                moe_loss_total += moe_loss
+                cls_tokens, attn_weights = cls_block(x, x_cls=cls_tokens, padding_mask=padding_mask)
 
             x_cls = self.norm(cls_tokens).squeeze(0)
 
@@ -1035,7 +1031,7 @@ class ParticleTransformer(nn.Module):
             # print('isnan:\n', output.isnan().any())
             if self.return_qk_final_U_attn_weights:
                 return output, qk_attn_weights_list, attn_weights_list, attn_mask
-            return output, moe_loss_total
+            return output
 
 
 class ParticleTransformerMultipleRuns(nn.Module):
