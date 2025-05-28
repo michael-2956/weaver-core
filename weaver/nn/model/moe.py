@@ -348,7 +348,7 @@ class MoE(Module):
 
     @torch.no_grad()
     def moe_infer(self, x, flat_expert_indices, flat_expert_weights):
-        expert_cache = torch.zeros_like(x)
+        expert_cache = torch.zeros_like(x, dtype=x.dtype)
         idxs = flat_expert_indices.argsort()
         tokens_per_expert = flat_expert_indices.bincount().cpu().numpy().cumsum(0)
         token_idxs = idxs // self.top_n
