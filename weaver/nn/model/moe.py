@@ -389,8 +389,6 @@ class SparseMoEBlock(Module):
     def forward(
             self,
             x,
-            noise_gates=False,
-            noise_mult=1.
     ):
 
         # feedforward before
@@ -399,11 +397,11 @@ class SparseMoEBlock(Module):
 
         # mixture of experts layer
         residual = x
-        moe_out, total_aux_loss = self.moe(self.moe_prenorm(x), noise_gates=noise_gates, noise_mult=noise_mult)
+        moe_out = self.moe(self.moe_prenorm(x))
         x = moe_out + residual
 
         # feedforward after
         if exists(self.ff_after):
             x = self.ff_after(x) + x
 
-        return MixtureOfExpertsReturn(x, total_aux_loss)
+        return x
