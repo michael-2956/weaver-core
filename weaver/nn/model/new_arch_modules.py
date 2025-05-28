@@ -9,7 +9,7 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from linformer_pytorch import LinearAttentionHead, get_EF
 
-from weaver.nn.model.moe import SparseMoEBlock, MoE, Expert, Experts
+from weaver.nn.model.moe import SparseMoEBlock, MoE, Expert
 
 
 class FFNBlockSection(nn.Module):
