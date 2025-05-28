@@ -333,7 +333,7 @@ class MoE(Module):
         x = x.view(-1, x.shape[-1])
         flat_topk_idx = topk_idx.view(-1)
         if self.training:
-            x = x.repeat_interleave(self.num_experts_per_tok, dim=0)
+            x = x.repeat_interleave(self.top_n, dim=0)
             y = torch.empty_like(x)
             for i, expert in enumerate(self.experts):
                 y[flat_topk_idx == i] = expert(x[flat_topk_idx == i])
@@ -351,7 +351,7 @@ class MoE(Module):
         expert_cache = torch.zeros_like(x)
         idxs = flat_expert_indices.argsort()
         tokens_per_expert = flat_expert_indices.bincount().cpu().numpy().cumsum(0)
-        token_idxs = idxs // self.num_experts_per_tok
+        token_idxs = idxs // self.top_n
         for i, end_idx in enumerate(tokens_per_expert):
             start_idx = 0 if i == 0 else tokens_per_expert[i - 1]
             if start_idx == end_idx:
