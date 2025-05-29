@@ -1,4 +1,5 @@
 # https://github.com/lucidrains/st-moe-pytorch
+# https://huggingface.co/deepseek-ai/deepseek-moe-16b-base/blob/main/modeling_deepseek.py
 
 from __future__ import annotations
 
