@@ -824,7 +824,7 @@ class ParticleTransformer(nn.Module):
                  add_QK_U_alpha_in_every_block=False,
                  # uses cls_block_params & num_cls_layers & identical_attn_weights
                  weighted_decode_every_layer=False,
-                 weighted_decode_softmax_mode="softmax",  # accepts softmax, gumbel_softmax, gumbel_softmax_sample, sigmoid_every
+                 weighted_decode_softmax_mode="softmax",  # accepts softmax, gumbel_softmax, gumbel_softmax_sample, sigmoid_every, gumbel_sigmoid_every
                  # misc
                  trim=True,
                  trim_mode="random_cutoff_in_train",
@@ -866,7 +866,7 @@ class ParticleTransformer(nn.Module):
         self.add_QK_U_alpha_in_every_block = add_QK_U_alpha_in_every_block
 
         if weighted_decode_every_layer:
-            assert weighted_decode_softmax_mode in ["softmax", "gumbel_softmax", "gumbel_softmax_sample", "sigmoid_every"]
+            assert weighted_decode_softmax_mode in ["softmax", "gumbel_softmax", "gumbel_softmax_sample", "sigmoid_every", "gumbel_sigmoid_every"]
             self.weighted_decode_softmax_mode = weighted_decode_softmax_mode
 
         if uniformly_add_nblocks is not None:
@@ -1092,6 +1092,10 @@ class ParticleTransformer(nn.Module):
                     x_weights = torch.softmax(x_weights, dim=1)  # (B, num_blocks)
                 elif self.weighted_decode_softmax_mode == "sigmoid_every":
                     x_weights = torch.sigmoid(x_weights)         # (B, num_blocks)
+                elif self.weighted_decode_softmax_mode == "gumbel_sigmoid_every":
+                    sig = torch.sigmoid(x_weights)           # (B, num_blocks)
+                    hard = (sig > 0.5).float()               # (B, num_blocks) (0 or 1)
+                    x_weights = sig + (hard - sig).detach()  # (B, num_blocks)
                 elif self.weighted_decode_softmax_mode in ["gumbel_softmax", "gumbel_softmax_sample"]:
                     x_weights_soft = F.softmax(x_weights, dim=1)  # (B, num_blocks)
                     if self.weighted_decode_softmax_mode == "gumbel_softmax_sample" and self.training:
