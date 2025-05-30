@@ -1113,9 +1113,10 @@ class ParticleTransformer(nn.Module):
                     # but backward-prop uses gradient from x_soft
                     x_weights = (x_weights_hard - x_weights_soft).detach() + x_weights_soft
                 if self.weighted_decode_warmup_steps is not None:
-                    warmup_flag = (
-                        self.weighted_decode_warmup_steps_done < self.weighted_decode_warmup_steps
-                    ).to(x_weights.dtype)  # 1.0 during warmup, 0.0 after
+                    warmup_flag = torch.as_tensor(
+                        self.weighted_decode_warmup_steps_done < self.weighted_decode_warmup_steps,
+                        dtype=x_weights.dtype, device=x_weights.device,
+                    )  # 1.0 during warmup, 0.0 after
                     self.weighted_decode_warmup_steps_done += 1
                     x_weights_hard_last = torch.zeros_like(x_weights)
                     x_weights_hard_last[:, -1] = 1
