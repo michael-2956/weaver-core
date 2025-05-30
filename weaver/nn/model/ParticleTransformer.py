@@ -864,9 +864,12 @@ class ParticleTransformer(nn.Module):
         self.return_qk_final_U_attn_weights = return_qk_final_U_attn_weights
         self.uniformly_add_nblocks = uniformly_add_nblocks
         self.weighted_decode_every_layer = weighted_decode_every_layer
-        self.weighted_decode_warmup_steps = weighted_decode_warmup_steps if weighted_decode_warmup_steps is not None else -1
+        self.weighted_decode_warmup_steps = weighted_decode_warmup_steps
         self.weighted_decode_warmup_steps_done = 0
         self.add_QK_U_alpha_in_every_block = add_QK_U_alpha_in_every_block
+
+        if weighted_decode_warmup_steps is not None:
+            assert isinstance(weighted_decode_warmup_steps, int)
 
         if weighted_decode_every_layer:
             assert weighted_decode_softmax_mode in ["softmax", "gumbel_softmax", "gumbel_softmax_sample", "sigmoid_every", "gumbel_sigmoid_every"]
@@ -1081,7 +1084,7 @@ class ParticleTransformer(nn.Module):
                     else:
                         x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask, qk_u_alpha=qk_u_alpha)
                 
-                if self.weighted_decode_every_layer and self.weighted_decode_warmup_steps_done >= self.weighted_decode_warmup_steps:
+                if self.weighted_decode_every_layer:
                     x_weight = decode(x, self.weighting_token, self.weighting_blocks, self.weighting_norm)
                     x_weight = self.weighting_fc(x_weight)  # (B, 1)
                     x_weights.append(x_weight)
@@ -1089,7 +1092,7 @@ class ParticleTransformer(nn.Module):
                     output = self.fc(x_cls)  # (B, num_classes)
                     outputs.append(output)
 
-            if self.weighted_decode_every_layer and self.weighted_decode_warmup_steps_done >= self.weighted_decode_warmup_steps:
+            if self.weighted_decode_every_layer:
                 x_weights = torch.cat(x_weights, dim=1)  # (B, num_blocks)
                 if self.weighted_decode_softmax_mode == "softmax":
                     x_weights = torch.softmax(x_weights, dim=1)  # (B, num_blocks)
@@ -1109,10 +1112,17 @@ class ParticleTransformer(nn.Module):
                     # this way loss is calculated based on x_hard,
                     # but backward-prop uses gradient from x_soft
                     x_weights = (x_weights_hard - x_weights_soft).detach() + x_weights_soft
+                if self.weighted_decode_warmup_steps is not None:
+                    warmup_flag = (
+                        self.weighted_decode_warmup_steps_done < self.weighted_decode_warmup_steps
+                    ).to(x_weights.dtype)  # 1.0 during warmup, 0.0 after
+                    self.weighted_decode_warmup_steps_done += 1
+                    x_weights_hard_last = torch.zeros_like(x_weights)
+                    x_weights_hard_last[:, -1] = 1
+                    x_weights = x_weights * (1 - warmup_flag) + x_weights_hard_last * warmup_flag
                 outputs = torch.stack(outputs)  # (num_blocks, B, num_classes)
                 output = torch.einsum('bn,nbc->bc', x_weights, outputs)  # (B, num_classes)
             else:
-                self.weighted_decode_warmup_steps_done += 1
                 x_cls = decode(x, self.cls_token, self.cls_blocks, self.norm)
                 # fc
                 if self.fc is None:
