@@ -1114,10 +1114,11 @@ class ParticleTransformer(nn.Module):
                     x_weights = (x_weights_hard - x_weights_soft).detach() + x_weights_soft
                 if self.weighted_decode_warmup_steps is not None:
                     warmup_flag = torch.as_tensor(
-                        self.weighted_decode_warmup_steps_done < self.weighted_decode_warmup_steps,
+                        self.weighted_decode_warmup_steps_done < self.weighted_decode_warmup_steps and self.training,
                         dtype=x_weights.dtype, device=x_weights.device,
                     )  # 1.0 during warmup, 0.0 after
-                    self.weighted_decode_warmup_steps_done += 1
+                    if self.training:
+                        self.weighted_decode_warmup_steps_done += 1
                     x_weights_hard_last = torch.zeros_like(x_weights)
                     x_weights_hard_last[:, -1] = 1
                     x_weights = x_weights * (1 - warmup_flag) + x_weights_hard_last * warmup_flag
