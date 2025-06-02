@@ -1096,6 +1096,8 @@ class ParticleTransformer(nn.Module):
 
             if self.weighted_decode_every_layer:
                 x_weights = torch.cat(x_weights, dim=1)  # (B, num_blocks)
+                if self.return_qk_final_U_attn_weights:
+                    x_weights_unnorm = x_weights
                 if self.weighted_decode_softmax_mode == "softmax":
                     x_weights = torch.softmax(x_weights, dim=1)  # (B, num_blocks)
                 elif self.weighted_decode_softmax_mode == "sigmoid_every":
@@ -1142,7 +1144,7 @@ class ParticleTransformer(nn.Module):
 
             if self.return_qk_final_U_attn_weights:
                 if self.weighted_decode_every_layer:
-                    return output, qk_attn_weights_list, attn_weights_list, attn_mask, x_weights, outputs
+                    return output, qk_attn_weights_list, attn_weights_list, attn_mask, x_weights_unnorm, x_weights, outputs
                 else:
                     return output, qk_attn_weights_list, attn_weights_list, attn_mask
             return output
