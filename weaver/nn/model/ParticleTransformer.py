@@ -1072,7 +1072,7 @@ class ParticleTransformer(nn.Module):
                         qk_u_alpha = self.qk_u_encoder_alphas[bi].unsqueeze(0)  # (1, num_heads)
                     elif self.QK_U_alpha_mode == "decode":
                         x_QK_U_alpha = decode(x, self.QK_U_alpha_token, self.QK_U_alpha_blocks, self.QK_U_alpha_norm)
-                        x_QK_U_alpha = self.weighting_fc(x_QK_U_alpha)  # (B, num_heads)
+                        x_QK_U_alpha = self.QK_U_alpha_fc(x_QK_U_alpha)  # (B, num_heads)
                     else:
                         raise ValueError(f"Unknown {self.QK_U_alpha_mode = }")
 
