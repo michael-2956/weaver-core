@@ -822,6 +822,7 @@ class ParticleTransformer(nn.Module):
                  add_sink_token=False,
                  uniformly_add_nblocks=None,
                  add_QK_U_alpha_in_every_block=False,
+                 QK_U_alpha_mode="static", # accepts static, decode
                  # uses cls_block_params & num_cls_layers & identical_attn_weights
                  weighted_decode_every_layer=False,
                  weighted_decode_softmax_mode="softmax",  # accepts softmax, gumbel_softmax, gumbel_softmax_sample, sigmoid_every, gumbel_sigmoid_every
@@ -877,6 +878,10 @@ class ParticleTransformer(nn.Module):
             assert weighted_decode_softmax_mode in ["softmax", "gumbel_softmax", "gumbel_softmax_sample", "sigmoid_every", "gumbel_sigmoid_every"]
             self.weighted_decode_softmax_mode = weighted_decode_softmax_mode
 
+        if add_QK_U_alpha_in_every_block:
+            assert QK_U_alpha_mode in ["static", "decode"]
+            self.QK_U_alpha_mode = QK_U_alpha_mode
+
         if uniformly_add_nblocks is not None:
             assert identical_attn_weights  # other can be implemented if need be
             assert isinstance(uniformly_add_nblocks, int)
@@ -919,9 +924,32 @@ class ParticleTransformer(nn.Module):
             ) if pair_embed_dims is not None and pair_input_dim + pair_extra_dim > 0 else None
         
         if add_QK_U_alpha_in_every_block:
-            additional_layers = 0 if uniformly_add_nblocks is None else uniformly_add_nblocks
-            self.qk_u_encoder_alphas = nn.Parameter(torch.zeros(num_layers + additional_layers, cfg_block['num_heads']), requires_grad=True)
-            trunc_normal_(self.qk_u_encoder_alphas, std=.02)
+            if QK_U_alpha_mode == "static":
+                additional_layers = 0 if uniformly_add_nblocks is None else uniformly_add_nblocks
+                self.qk_u_encoder_alphas = nn.Parameter(torch.zeros(num_layers + additional_layers, cfg_block['num_heads']), requires_grad=True)
+                trunc_normal_(self.qk_u_encoder_alphas, std=.02)
+            elif QK_U_alpha_mode == "decode":
+                # blocks
+                if identical_attn_weights:
+                    self.QK_U_alpha_blocks = nn.ModuleList([AlteredBlock(**cfg_cls_block) for _ in range(1)])
+                else:
+                    self.QK_U_alpha_blocks = nn.ModuleList([AlteredBlock(**cfg_cls_block) for _ in range(num_cls_layers)])
+                # norm
+                self.QK_U_alpha_norm = nn.LayerNorm(embed_dim)
+                # decoding token
+                self.QK_U_alpha_token = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=True)
+                trunc_normal_(self.QK_U_alpha_token, std=.02)
+                # FC to get alpha value for each head
+                assert fc_params is not None  # can be implemented if need be
+                fcs = []
+                prev_dim = embed_dim
+                for dim, drop_rate in fc_params:
+                    fcs.append(nn.Sequential(nn.Linear(prev_dim, dim), nn.ReLU(), nn.Dropout(drop_rate)))
+                    prev_dim = dim
+                fcs.append(nn.Linear(prev_dim, cfg_block['num_heads']))
+                self.QK_U_alpha_fc = nn.Sequential(*fcs)
+            else:
+                raise ValueError(f"Unknown {QK_U_alpha_mode = }")
 
         if identical_attn_weights:
             self.blocks = nn.ModuleList([AlteredBlock(**cfg_block) for _ in range(1)])
@@ -1040,7 +1068,13 @@ class ParticleTransformer(nn.Module):
 
                 qk_u_alpha = None
                 if self.add_QK_U_alpha_in_every_block:
-                    qk_u_alpha = self.qk_u_encoder_alphas[bi]
+                    if self.QK_U_alpha_mode == "static":
+                        qk_u_alpha = self.qk_u_encoder_alphas[bi].unsqueeze(0)  # (1, num_heads)
+                    elif self.QK_U_alpha_mode == "decode":
+                        x_QK_U_alpha = decode(x, self.QK_U_alpha_token, self.QK_U_alpha_blocks, self.QK_U_alpha_norm)
+                        x_QK_U_alpha = self.weighting_fc(x_QK_U_alpha)  # (B, num_heads)
+                    else:
+                        raise ValueError(f"Unknown {self.QK_U_alpha_mode = }")
 
                 if self.pemb_transforms_attn_w_logits:
                     assert not self.return_qk_final_U_attn_weights # can be implemented if need be
