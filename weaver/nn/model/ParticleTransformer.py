@@ -828,6 +828,7 @@ class ParticleTransformer(nn.Module):
                  weighted_decode_softmax_mode="softmax",  # accepts softmax, gumbel_softmax, gumbel_softmax_sample, sigmoid_every, gumbel_sigmoid_every
                  weighted_decode_normalize_sigmoids=True,
                  weighted_decode_warmup_steps=None,
+                 weighted_decode_mode="ensemble",  # accepts ensemble, aggregate_x
                  # misc
                  trim=True,
                  trim_mode="random_cutoff_in_train",
@@ -877,6 +878,8 @@ class ParticleTransformer(nn.Module):
         if weighted_decode_every_layer:
             assert weighted_decode_softmax_mode in ["softmax", "gumbel_softmax", "gumbel_softmax_sample", "sigmoid_every", "gumbel_sigmoid_every"]
             self.weighted_decode_softmax_mode = weighted_decode_softmax_mode
+            assert weighted_decode_mode in ["ensemble", "aggregate_x"]
+            self.weighted_decode_mode = weighted_decode_mode
 
         if add_QK_U_alpha_in_every_block:
             assert QK_U_alpha_mode in ["static", "decode"]
@@ -1124,9 +1127,12 @@ class ParticleTransformer(nn.Module):
                     x_weight = decode(x, self.weighting_token, self.weighting_blocks, self.weighting_norm)
                     x_weight = self.weighting_fc(x_weight)  # (B, 1)
                     x_weights.append(x_weight)
-                    x_cls = decode(x, self.cls_token, self.cls_blocks, self.norm)
-                    output = self.fc(x_cls)  # (B, num_classes)
-                    outputs.append(output)
+                    if self.weighted_decode_mode == "ensemble":
+                        x_cls = decode(x, self.cls_token, self.cls_blocks, self.norm)
+                        output = self.fc(x_cls)  # (B, num_classes)
+                        outputs.append(output)
+                    elif self.weighted_decode_mode == "aggregate_x":
+                        outputs.append(x)  # (n_particles, B, ch_size)
 
             if self.weighted_decode_every_layer:
                 x_weights = torch.cat(x_weights, dim=1)  # (B, num_blocks)
@@ -1164,8 +1170,15 @@ class ParticleTransformer(nn.Module):
                     x_weights_hard_last = torch.zeros_like(x_weights)
                     x_weights_hard_last[:, -1] = 1
                     x_weights = x_weights * (1 - warmup_flag) + x_weights_hard_last * warmup_flag
-                outputs = torch.stack(outputs)  # (num_blocks, B, num_classes)
-                output = torch.einsum('bn,nbc->bc', x_weights, outputs)  # (B, num_classes)
+                if self.weighted_decode_mode == "ensemble":
+                    outputs = torch.stack(outputs)  # (num_blocks, B, num_classes)
+                    output = torch.einsum('bn,nbc->bc', x_weights, outputs)  # (B, num_classes)
+                elif self.weighted_decode_mode == "aggregate_x":
+                    outputs = torch.stack(outputs)  # (num_blocks, n_particles, B, ch_size)
+                    x_agg = torch.einsum('bn,nbc->bc', x_weights, outputs)  # (n_particles, B, ch_size)
+                    x_cls = decode(x_agg, self.cls_token, self.cls_blocks, self.norm)
+                    output = self.fc(x_cls)  # (B, num_classes)
+                    outputs.append(output)
             else:
                 x_cls = decode(x, self.cls_token, self.cls_blocks, self.norm)
                 # fc
