@@ -1175,10 +1175,9 @@ class ParticleTransformer(nn.Module):
                     output = torch.einsum('bn,nbc->bc', x_weights, outputs)  # (B, num_classes)
                 elif self.weighted_decode_mode == "aggregate_x":
                     outputs = torch.stack(outputs)  # (num_blocks, n_particles, B, ch_size)
-                    x_agg = torch.einsum('bn,nbc->bc', x_weights, outputs)  # (n_particles, B, ch_size)
+                    x_agg = torch.einsum('bn,npbc->pbc', x_weights, outputs)  # (n_particles, B, ch_size)
                     x_cls = decode(x_agg, self.cls_token, self.cls_blocks, self.norm)
                     output = self.fc(x_cls)  # (B, num_classes)
-                    outputs.append(output)
             else:
                 x_cls = decode(x, self.cls_token, self.cls_blocks, self.norm)
                 # fc
