@@ -1080,7 +1080,7 @@ class ParticleTransformer(nn.Module):
                         cls_block = blocks[0]
                     else:
                         cls_block = blocks[cbi]
-                    cls_tokens = cls_block(x_inp, x_cls=cls_tokens, padding_mask=padding_mask)
+                    cls_tokens, _ = cls_block(x_inp, x_cls=cls_tokens, padding_mask=padding_mask)
                 x_cls = norm(cls_tokens).squeeze(0)
                 return x_cls
             
