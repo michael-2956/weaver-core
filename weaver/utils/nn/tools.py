@@ -78,6 +78,7 @@ def train_classification(
 
     with tqdm.tqdm(train_loader, mininterval=1) as tq:
         for X, y, _ in tq:
+          break
           with (torch_xla.step() if dev == 'xla' else contextlib.nullcontext()):
             inputs = [X[k].to(dev) for k in data_config.input_names]
             label = y[data_config.label_names[0]].long().to(dev)

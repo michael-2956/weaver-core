@@ -331,6 +331,8 @@ class MoE(Module):
         identity = x
         orig_shape = x.shape
         topk_idx, topk_weight, aux_loss = self.gate(x)
+        print(topk_idx.size())
+        print(topk_idx)
         x = x.view(-1, x.shape[-1])
         flat_topk_idx = topk_idx.view(-1)
         if self.training:
