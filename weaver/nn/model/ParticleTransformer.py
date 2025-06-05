@@ -1110,7 +1110,7 @@ class ParticleTransformer(nn.Module):
                     qk_attn_weight_logits = block(x, x_cls=None, padding_mask=None, attn_mask=None, return_qk_attn_weight_logits=True)
                     assert uu is None  # not supported here
                     pair_embeds = self.pair_embed(v, qk_attn_weight_logits, block_index=bi)
-                    x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=None, use_qk_attn_weight_logits=pair_embeds, qk_u_alpha=qk_u_alpha)
+                    x, _ = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=None, use_qk_attn_weight_logits=pair_embeds, qk_u_alpha=qk_u_alpha)
                     continue
 
                 attn_mask = None
@@ -1146,7 +1146,7 @@ class ParticleTransformer(nn.Module):
                         x, attn_weights = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask, return_final_attn_weight=True, qk_u_alpha=qk_u_alpha)
                         attn_weights_list.append(attn_weights.detach().cpu())
                     else:
-                        x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask, qk_u_alpha=qk_u_alpha)
+                        x, _ = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask, qk_u_alpha=qk_u_alpha)
                 
                 if self.weighted_decode_every_layer:
                     x_weight = decode(x, self.weighting_token, self.weighting_blocks, self.weighting_norm)
@@ -1360,7 +1360,7 @@ class ParticleTransformerWithInverter(nn.Module):
 
             # transform
             for block in self.blocks:
-                x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask)
+                x, _ = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask)
 
             # extract class token
             cls_tokens = self.cls_token.expand(1, x.size(1), -1)  # (1, N, C)
