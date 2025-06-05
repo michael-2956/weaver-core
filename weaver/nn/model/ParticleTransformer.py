@@ -1089,8 +1089,6 @@ class ParticleTransformer(nn.Module):
                 outputs = []
             
             for bi in range(num_blocks):
-
-            for bi in range(num_blocks):
                 if self.identical_attn_weights:
                     block = self.blocks[0]
                 else:
