@@ -9,6 +9,7 @@ import copy
 import torch
 import torch.nn as nn
 from functools import partial
+import torch.nn.functional as F
 
 from weaver.utils.logger import _logger
 
@@ -627,31 +628,53 @@ class InteractionTransformer(nn.Module):
                  block_params=None,
                  cls_block_params={'dropout': 0, 'attn_dropout': 0, 'activation_dropout': 0},
                  fc_params=[],
+                 identical_attn_weights=False,
                  activation='gelu',
                  attention='linformer',
                  lin_proj_dim=128,
+                 return_P_bars=False,
                  # misc
                  trim=True,
+                 trim_mode="random_cutoff_in_train",
+                 trim_mode_fixed_length=None,
+                 trim_random_cutoff_range=(0.9, 1.02),
                  for_inference=False,
                  use_amp=False,
                  use_xla=False,
                  **kwargs) -> None:
         super().__init__(**kwargs)
 
-        # self.trimmer = SequenceTrimmer(enabled=trim and not for_inference)
-        # self.trimmer = SequenceTrimmer(enabled=trim, target=(0.05, 0.051), warmup_steps=0, trim_in_test=True)
-        
-        input_seq_len = 23  # artificially cut
-        # self.trimmer = SequenceTrimmer(enabled=trim, fixed_length=input_seq_len, warmup_steps=0, trim_in_test=True, shuffle_before_cut=True)
-        self.trimmer = SequenceTrimmer(enabled=trim, fixed_length=input_seq_len, warmup_steps=0, trim_in_test=True, shuffle_before_cut=False)
+        if trim_mode in ["random_cutoff_in_train", "random_cutoff_always"]:
+            self.trimmer = SequenceTrimmer(
+                enabled=trim and not for_inference,
+                target=trim_random_cutoff_range,
+                trim_in_test=(trim_mode == "random_cutoff_always")
+            )
+        elif trim_mode in ["fixed_shuffle_always", "fixed_noshuffle_always"]:
+            assert trim_mode_fixed_length is not None
+            self.trimmer = SequenceTrimmer(
+                enabled=trim,
+                fixed_length=trim_mode_fixed_length,
+                warmup_steps=0,
+                trim_in_test=True,
+                shuffle_before_cut=(trim_mode == "fixed_shuffle_always")
+            )
+            input_seq_len = min(input_seq_len, trim_mode_fixed_length)
+        else:
+            raise ValueError(f"trim_mode {trim_mode} not supported")
 
         self.for_inference = for_inference
         self.use_amp = use_amp
         self.use_xla = use_xla
+        self.identical_attn_weights = identical_attn_weights
+        self.return_P_bars = return_P_bars
+        self.input_seq_len = input_seq_len
 
         self.interactions_dim = interactions_dim
 
         input_seq_len_2d = input_seq_len**2
+
+        print(f"{input_seq_len_2d = }")
 
         embed_dim = embed_dims[-1] if len(embed_dims) > 0 else interactions_dim
         default_cfg = dict(
@@ -687,9 +710,16 @@ class InteractionTransformer(nn.Module):
         )
 
         self.embed = Embed(interactions_dim, embed_dims, activation=activation) if len(embed_dims) > 0 else nn.Identity()
-        
-        self.blocks = nn.ModuleList([AlteredBlock(**cfg_block) for _ in range(num_layers)])
-        self.cls_blocks = nn.ModuleList([AlteredBlock(**cfg_cls_block) for _ in range(num_cls_layers)])
+
+        self.num_layers = num_layers
+        self.num_cls_layers = num_cls_layers
+        if identical_attn_weights:
+            self.blocks = nn.ModuleList([AlteredBlock(**cfg_block) for _ in range(1)])
+            self.cls_blocks = nn.ModuleList([AlteredBlock(**cfg_cls_block) for _ in range(1)])
+        else:
+            self.blocks = nn.ModuleList([AlteredBlock(**cfg_block) for _ in range(num_layers)])
+            self.cls_blocks = nn.ModuleList([AlteredBlock(**cfg_cls_block) for _ in range(num_cls_layers)])
+
         self.norm = nn.LayerNorm(embed_dim)
 
         if fc_params is not None:
@@ -735,14 +765,23 @@ class InteractionTransformer(nn.Module):
 
             # input embedding
             x = self.embed(x_pair)  # (P*P, N, interactions_dim)
+
+            if self.return_P_bars:
+                P_bars = []
             
-            for block in self.blocks:
-                x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=None)
+            for i in range(self.num_layers):
+                bi = 0 if self.identical_attn_weights else i
+                if self.return_P_bars:
+                    P_bars.append(
+                        self.blocks[bi](x, x_cls=None, padding_mask=padding_mask, attn_mask=None, return_qk_attn_weight_logits=True)
+                    )
+                x = self.blocks[bi](x, x_cls=None, padding_mask=padding_mask, attn_mask=None)
 
             # extract class token
             cls_tokens = self.cls_token.expand(1, x.size(1), -1)  # (1, N, C)
-            for block in self.cls_blocks:
-                cls_tokens = block(x, x_cls=cls_tokens, padding_mask=padding_mask, attn_mask=None)
+            for i in range(self.num_cls_layers):
+                bi = 0 if self.identical_attn_weights else i
+                cls_tokens = self.cls_blocks[bi](x, x_cls=cls_tokens, padding_mask=padding_mask, attn_mask=None)
 
             x_cls = self.norm(cls_tokens).squeeze(0)
 
@@ -753,7 +792,10 @@ class InteractionTransformer(nn.Module):
             if self.for_inference:
                 output = torch.softmax(output, dim=1)
             # print('output:\n', output)
-            return output
+            if self.return_P_bars:
+                return output, P_bars
+            else:
+                return output
 
 
 class ParticleTransformer(nn.Module):
@@ -782,6 +824,14 @@ class ParticleTransformer(nn.Module):
                  return_qk_final_U_attn_weights=False,
                  add_sink_token=False,
                  uniformly_add_nblocks=None,
+                 add_QK_U_alpha_in_every_block=False,
+                 QK_U_alpha_mode="static", # accepts static, decode
+                 # uses cls_block_params & num_cls_layers & identical_attn_weights
+                 weighted_decode_every_layer=False,
+                 weighted_decode_softmax_mode="softmax",  # accepts softmax, gumbel_softmax, gumbel_softmax_sample, sigmoid_every, gumbel_sigmoid_every
+                 weighted_decode_normalize_sigmoids=True,
+                 weighted_decode_warmup_steps=None,
+                 weighted_decode_mode="ensemble",  # accepts ensemble, aggregate_x
                  # MoE params
                  use_moe=False,
                  N_experts=16,
@@ -800,7 +850,7 @@ class ParticleTransformer(nn.Module):
                  **kwargs) -> None:
         super().__init__(**kwargs)
 
-        if trim_mode == "random_cutoff_in_train":
+        if trim_mode in ["random_cutoff_in_train", "random_cutoff_always"]:
             self.trimmer = SequenceTrimmer(
                 enabled=trim and not for_inference,
                 target=trim_random_cutoff_range,
@@ -826,6 +876,24 @@ class ParticleTransformer(nn.Module):
         self.num_cls_layers = num_cls_layers
         self.return_qk_final_U_attn_weights = return_qk_final_U_attn_weights
         self.uniformly_add_nblocks = uniformly_add_nblocks
+        self.weighted_decode_every_layer = weighted_decode_every_layer
+        self.weighted_decode_normalize_sigmoids = weighted_decode_normalize_sigmoids
+        self.weighted_decode_warmup_steps = weighted_decode_warmup_steps
+        self.weighted_decode_warmup_steps_done = 0
+        self.add_QK_U_alpha_in_every_block = add_QK_U_alpha_in_every_block
+
+        if weighted_decode_warmup_steps is not None:
+            assert isinstance(weighted_decode_warmup_steps, int)
+
+        if weighted_decode_every_layer:
+            assert weighted_decode_softmax_mode in ["softmax", "gumbel_softmax", "gumbel_softmax_sample", "sigmoid_every", "gumbel_sigmoid_every"]
+            self.weighted_decode_softmax_mode = weighted_decode_softmax_mode
+            assert weighted_decode_mode in ["ensemble", "aggregate_x"]
+            self.weighted_decode_mode = weighted_decode_mode
+
+        if add_QK_U_alpha_in_every_block:
+            assert QK_U_alpha_mode in ["static", "decode"]
+            self.QK_U_alpha_mode = QK_U_alpha_mode
 
         if uniformly_add_nblocks is not None:
             assert identical_attn_weights  # other can be implemented if need be
@@ -883,14 +951,48 @@ class ParticleTransformer(nn.Module):
                 mode="concat" if self.pemb_needs_prev_attn_w or self.pemb_transforms_attn_w_logits else "sum",
                 with_residual=pair_embed_with_residual
             ) if pair_embed_dims is not None and pair_input_dim + pair_extra_dim > 0 else None
+        
+        if add_QK_U_alpha_in_every_block:
+            if QK_U_alpha_mode == "static":
+                additional_layers = 0 if uniformly_add_nblocks is None else uniformly_add_nblocks
+                self.qk_u_encoder_alphas = nn.Parameter(torch.zeros(num_layers + additional_layers, cfg_block['num_heads']), requires_grad=True)
+                trunc_normal_(self.qk_u_encoder_alphas, std=.02)
+            elif QK_U_alpha_mode == "decode":
+                # blocks
+                if identical_attn_weights:
+                    self.QK_U_alpha_blocks = nn.ModuleList([AlteredBlock(**cfg_cls_block) for _ in range(1)])
+                else:
+                    self.QK_U_alpha_blocks = nn.ModuleList([AlteredBlock(**cfg_cls_block) for _ in range(num_cls_layers)])
+                # norm
+                self.QK_U_alpha_norm = nn.LayerNorm(embed_dim)
+                # decoding token
+                self.QK_U_alpha_token = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=True)
+                trunc_normal_(self.QK_U_alpha_token, std=.02)
+                # FC to get alpha value for each head
+                assert fc_params is not None  # can be implemented if need be
+                fcs = []
+                prev_dim = embed_dim
+                for dim, drop_rate in fc_params:
+                    fcs.append(nn.Sequential(nn.Linear(prev_dim, dim), nn.ReLU(), nn.Dropout(drop_rate)))
+                    prev_dim = dim
+                fcs.append(nn.Linear(prev_dim, cfg_block['num_heads']))
+                self.QK_U_alpha_fc = nn.Sequential(*fcs)
+            else:
+                raise ValueError(f"Unknown {QK_U_alpha_mode = }")
 
         if identical_attn_weights:
             self.blocks = nn.ModuleList([AlteredBlock(**cfg_block) for _ in range(1)])
             self.cls_blocks = nn.ModuleList([AlteredBlock(**cfg_cls_block) for _ in range(1)])
+            if weighted_decode_every_layer:
+                self.weighting_blocks = nn.ModuleList([AlteredBlock(**cfg_cls_block) for _ in range(1)])
         else:
             self.blocks = nn.ModuleList([AlteredBlock(**cfg_block) for _ in range(num_layers)])
             self.cls_blocks = nn.ModuleList([AlteredBlock(**cfg_cls_block) for _ in range(num_cls_layers)])
+            if weighted_decode_every_layer:
+                self.weighting_blocks = nn.ModuleList([AlteredBlock(**cfg_cls_block) for _ in range(num_cls_layers)])
         self.norm = nn.LayerNorm(embed_dim)
+        if weighted_decode_every_layer:
+            self.weighting_norm = nn.LayerNorm(embed_dim)
 
         if fc_params is not None:
             fcs = []
@@ -903,9 +1005,22 @@ class ParticleTransformer(nn.Module):
         else:
             self.fc = None
 
+        if weighted_decode_every_layer:
+            assert fc_params is not None  # can be implemented if need be
+            fcs = []
+            prev_dim = embed_dim
+            for dim, drop_rate in fc_params:
+                fcs.append(nn.Sequential(nn.Linear(prev_dim, dim), nn.ReLU(), nn.Dropout(drop_rate)))
+                prev_dim = dim
+            fcs.append(nn.Linear(prev_dim, 1))
+            self.weighting_fc = nn.Sequential(*fcs)
+
         # init
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=True)
         trunc_normal_(self.cls_token, std=.02)
+        if weighted_decode_every_layer:
+            self.weighting_token = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=True)
+            trunc_normal_(self.weighting_token, std=.02)
 
         self.sink_token = None
         if add_sink_token:
@@ -914,7 +1029,7 @@ class ParticleTransformer(nn.Module):
 
     @torch.jit.ignore
     def no_weight_decay(self):
-        return {'cls_token', 'sink_token', }
+        return {'cls_token', 'sink_token', 'qk_u_encoder_alphas', }
 
     def forward(self, x, v=None, mask=None, uu=None, uu_idx=None):
         # x: (N, C, P)
@@ -957,11 +1072,39 @@ class ParticleTransformer(nn.Module):
             if self.uniformly_add_nblocks is not None:
                 num_blocks += torch.randint(self.uniformly_add_nblocks + 1, size=(1,))[0].item()
 
+            def decode(x_inp, token, blocks, norm):
+                # extract class token
+                cls_tokens = token.expand(1, x_inp.size(1), -1)  # (1, N, C)
+                for cbi in range(self.num_cls_layers):
+                    if self.identical_attn_weights:
+                        cls_block = blocks[0]
+                    else:
+                        cls_block = blocks[cbi]
+                    cls_tokens = cls_block(x_inp, x_cls=cls_tokens, padding_mask=padding_mask)
+                x_cls = norm(cls_tokens).squeeze(0)
+                return x_cls
+            
+            if self.weighted_decode_every_layer:
+                x_weights = []
+                outputs = []
+            
+            for bi in range(num_blocks):
+
             for bi in range(num_blocks):
                 if self.identical_attn_weights:
                     block = self.blocks[0]
                 else:
                     block = self.blocks[bi]
+
+                qk_u_alpha = None
+                if self.add_QK_U_alpha_in_every_block:
+                    if self.QK_U_alpha_mode == "static":
+                        qk_u_alpha = self.qk_u_encoder_alphas[bi].unsqueeze(0)  # (1, num_heads)
+                    elif self.QK_U_alpha_mode == "decode":
+                        x_QK_U_alpha = decode(x, self.QK_U_alpha_token, self.QK_U_alpha_blocks, self.QK_U_alpha_norm)
+                        x_QK_U_alpha = self.QK_U_alpha_fc(x_QK_U_alpha)  # (B, num_heads)
+                    else:
+                        raise ValueError(f"Unknown {self.QK_U_alpha_mode = }")
 
                 if self.pemb_transforms_attn_w_logits:
                     assert not self.return_qk_final_U_attn_weights # can be implemented if need be
@@ -969,7 +1112,7 @@ class ParticleTransformer(nn.Module):
                     qk_attn_weight_logits = block(x, x_cls=None, padding_mask=None, attn_mask=None, return_qk_attn_weight_logits=True)
                     assert uu is None  # not supported here
                     pair_embeds = self.pair_embed(v, qk_attn_weight_logits, block_index=bi)
-                    x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=None, use_qk_attn_weight_logits=pair_embeds)
+                    x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=None, use_qk_attn_weight_logits=pair_embeds, qk_u_alpha=qk_u_alpha)
                     continue
 
                 attn_mask = None
@@ -995,38 +1138,88 @@ class ParticleTransformer(nn.Module):
                 if self.pemb_needs_prev_attn_w:
                     x, attn_weights = block(
                         x, x_cls=None, padding_mask=padding_mask,
-                        attn_mask=attn_mask, return_final_attn_weight=True
+                        attn_mask=attn_mask, return_final_attn_weight=True,
+                        qk_u_alpha=qk_u_alpha
                     )
                     if self.return_qk_final_U_attn_weights:
                         attn_weights_list.append(attn_weights.detach().cpu())
                 else:
                     if self.return_qk_final_U_attn_weights:
-                        x, attn_weights = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask, return_final_attn_weight=True)
+                        x, attn_weights = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask, return_final_attn_weight=True, qk_u_alpha=qk_u_alpha)
                         attn_weights_list.append(attn_weights.detach().cpu())
                     else:
-                        x, attn_weights = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask)
+                        x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask, qk_u_alpha=qk_u_alpha)
+                
+                if self.weighted_decode_every_layer:
+                    x_weight = decode(x, self.weighting_token, self.weighting_blocks, self.weighting_norm)
+                    x_weight = self.weighting_fc(x_weight)  # (B, 1)
+                    x_weights.append(x_weight)
+                    if self.weighted_decode_mode == "ensemble":
+                        x_cls = decode(x, self.cls_token, self.cls_blocks, self.norm)
+                        output = self.fc(x_cls)  # (B, num_classes)
+                        outputs.append(output)
+                    elif self.weighted_decode_mode == "aggregate_x":
+                        outputs.append(x)  # (n_particles, B, ch_size)
 
-            # extract class token
-            cls_tokens = self.cls_token.expand(1, x.size(1), -1)  # (1, N, C)
-            for cbi in range(self.num_cls_layers):
-                if self.identical_attn_weights:
-                    cls_block = self.cls_blocks[0]
-                else:
-                    cls_block = self.cls_blocks[cbi]
-                cls_tokens, attn_weights = cls_block(x, x_cls=cls_tokens, padding_mask=padding_mask)
+            if self.weighted_decode_every_layer:
+                x_weights = torch.cat(x_weights, dim=1)  # (B, num_blocks)
+                if self.return_qk_final_U_attn_weights:
+                    x_weights_unnorm = x_weights
+                if self.weighted_decode_softmax_mode == "softmax":
+                    x_weights = torch.softmax(x_weights, dim=1)  # (B, num_blocks)
+                elif self.weighted_decode_softmax_mode == "sigmoid_every":
+                    x_weights = torch.sigmoid(x_weights)                            # (B, num_blocks)
+                    if self.weighted_decode_normalize_sigmoids:
+                        x_weights = x_weights / x_weights.sum(dim=1, keepdim=True)  # (B, num_blocks)
+                elif self.weighted_decode_softmax_mode == "gumbel_sigmoid_every":
+                    sig = torch.sigmoid(x_weights)                # (B, num_blocks)
+                    if self.weighted_decode_normalize_sigmoids:
+                        sig = sig / sig.sum(dim=1, keepdim=True)  # (B, num_blocks)
+                    hard = (sig > 0.5).float()                    # (B, num_blocks) (0 or 1)
+                    x_weights = sig + (hard - sig).detach()       # (B, num_blocks)
+                elif self.weighted_decode_softmax_mode in ["gumbel_softmax", "gumbel_softmax_sample"]:
+                    x_weights_soft = F.softmax(x_weights, dim=1)  # (B, num_blocks)
+                    if self.weighted_decode_softmax_mode == "gumbel_softmax_sample" and self.training:
+                        idx = torch.multinomial(x_weights_soft, num_samples=1).squeeze(1)
+                    else:
+                        _, idx = x_weights_soft.max(dim=1)
+                    x_weights_hard = F.one_hot(idx, num_blocks).float()  # (B, num_blocks)
+                    # this way loss is calculated based on x_hard,
+                    # but backward-prop uses gradient from x_soft
+                    x_weights = (x_weights_hard - x_weights_soft).detach() + x_weights_soft
+                if self.weighted_decode_warmup_steps is not None:
+                    warmup_flag = torch.as_tensor(
+                        self.weighted_decode_warmup_steps_done < self.weighted_decode_warmup_steps and self.training,
+                        dtype=x_weights.dtype, device=x_weights.device,
+                    )  # 1.0 during warmup, 0.0 after
+                    if self.training:
+                        self.weighted_decode_warmup_steps_done += 1
+                    x_weights_hard_last = torch.zeros_like(x_weights)
+                    x_weights_hard_last[:, -1] = 1
+                    x_weights = x_weights * (1 - warmup_flag) + x_weights_hard_last * warmup_flag
+                if self.weighted_decode_mode == "ensemble":
+                    outputs = torch.stack(outputs)  # (num_blocks, B, num_classes)
+                    output = torch.einsum('bn,nbc->bc', x_weights, outputs)  # (B, num_classes)
+                elif self.weighted_decode_mode == "aggregate_x":
+                    outputs = torch.stack(outputs)  # (num_blocks, n_particles, B, ch_size)
+                    x_agg = torch.einsum('bn,npbc->pbc', x_weights, outputs)  # (n_particles, B, ch_size)
+                    x_cls = decode(x_agg, self.cls_token, self.cls_blocks, self.norm)
+                    output = self.fc(x_cls)  # (B, num_classes)
+            else:
+                x_cls = decode(x, self.cls_token, self.cls_blocks, self.norm)
+                # fc
+                if self.fc is None:
+                    return x_cls
+                output = self.fc(x_cls)
 
-            x_cls = self.norm(cls_tokens).squeeze(0)
-
-            # fc
-            if self.fc is None:
-                return x_cls
-            output = self.fc(x_cls)
             if self.for_inference:
                 output = torch.softmax(output, dim=1)
-            # print('output:\n', output)
-            # print('isnan:\n', output.isnan().any())
+
             if self.return_qk_final_U_attn_weights:
-                return output, qk_attn_weights_list, attn_weights_list, attn_mask
+                if self.weighted_decode_every_layer:
+                    return output, qk_attn_weights_list, attn_weights_list, attn_mask, x_weights_unnorm, x_weights, outputs
+                else:
+                    return output, qk_attn_weights_list, attn_weights_list, attn_mask
             return output
 
 

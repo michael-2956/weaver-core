@@ -105,6 +105,8 @@ parser.add_argument('--lr-scheduler', type=str, default='flat+decay',
                     help='learning rate scheduler')
 parser.add_argument('--lr-decay-ep-fraction', type=float, default=0.3,
                     help='fraction of decay epochs for the flat+decay option')
+parser.add_argument('--lr-decay-to', type=float, default=0.01,
+                    help='lr decay multiple to decay for the flat+decay option')
 parser.add_argument('--warmup-steps', type=int, default=0,
                     help='number of warm-up steps, only valid for `flat+linear` and `flat+cos` lr schedulers')
 parser.add_argument('--load-epoch', type=int, default=None,
@@ -533,7 +535,7 @@ def optim(args, model, device):
         elif args.lr_scheduler == 'flat+decay':
             num_decay_epochs = max(1, int(args.num_epochs * args.lr_decay_ep_fraction))
             milestones = list(range(args.num_epochs - num_decay_epochs, args.num_epochs))
-            gamma = 0.01 ** (1. / num_decay_epochs)
+            gamma = args.lr_decay_to ** (1. / num_decay_epochs)
             if len(names_lr_mult):
                 def get_lr(epoch): return gamma ** max(0, epoch - milestones[0] + 1)  # noqa
                 scheduler = torch.optim.lr_scheduler.LambdaLR(
