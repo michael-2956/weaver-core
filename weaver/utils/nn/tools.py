@@ -181,8 +181,8 @@ def evaluate_classification(model, test_loader, dev, epoch, for_training=True, l
     labels_counts = []
     observers = defaultdict(list)
     start_time = time.time()
-    block_outputs = [[] for _ in model.mod.num_layers]
-    cls_block_outputs = [[] for _ in model.mod.num_cls_layers]
+    block_outputs = [[] for _ in range(model.mod.num_layers)]
+    cls_block_outputs = [[] for _ in range(model.mod.num_cls_layers)]
     if dev == 'xla':
         import torch_xla
     with torch.no_grad():
