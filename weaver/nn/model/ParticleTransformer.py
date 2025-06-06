@@ -1224,7 +1224,7 @@ class ParticleTransformer(nn.Module):
                     return output, qk_attn_weights_list, attn_weights_list, attn_mask, x_weights_unnorm, x_weights, outputs
                 else:
                     return output, qk_attn_weights_list, attn_weights_list, attn_mask
-            return output, topk_idx, cls_block_topks
+            return output, block_topks, cls_block_topks
 
 
 class ParticleTransformerMultipleRuns(nn.Module):

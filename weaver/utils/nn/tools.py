@@ -198,8 +198,8 @@ def evaluate_classification(model, test_loader, dev, epoch, for_training=True, l
                 except KeyError:
                     mask = None
                 model_output, block_topks, cls_block_topks = model(*inputs)
-                print(block_topks.size())
-                print(block_topks)
+                # print(block_topks.size())
+                # print(block_topks)
                 if not for_training:
                     for i, topk_tensor in enumerate(block_topks):
                         block_outputs[i].extend(topk_tensor.tolist())
