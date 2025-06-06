@@ -676,10 +676,23 @@ def save_root(args, output_path, data_config, scores, labels, observers, block_t
     import awkward as ak
     from weaver.utils.data.fileio import _write_root
     output = {}
+
+    output_blocks = {}
+    output_path_blocks = output_path[:-5] + "_blocks.root"
+
+    def _pad_to_len(seq, target_len, pad_value=-1):
+        seq = list(seq)
+        return seq + [pad_value] * (target_len - len(seq))
+
+    max_len = max(
+        max(map(len, block_topks), default=0),
+        max(map(len, cls_block_topks), default=0)
+    )
     for i, block_topk in enumerate(block_topks):
-        output['block_' + str(i) + '_topk'] = block_topk
+        output_blocks[f"block_{i}_topk"] = _pad_to_len(block_topk, max_len)
     for i, cls_block_topk in enumerate(cls_block_topks):
-        output['cls_block_' + str(i) + '_topk'] = cls_block_topk
+        output_blocks[f"cls_block_{i}_topk"] = _pad_to_len(cls_block_topk, max_len)
+
     if data_config.label_type == 'simple':
         for idx, label_name in enumerate(data_config.label_value):
             output[label_name] = (labels[data_config.label_names[0]] == idx)
@@ -705,6 +718,12 @@ def save_root(args, output_path, data_config, scores, labels, observers, block_t
     try:
         _write_root(output_path, ak.Array(output))
         _logger.info('Written output to %s' % output_path, color='bold')
+    except Exception as e:
+        _logger.error('Error when writing output ROOT file: \n' + str(e))
+
+    try:
+        _write_root(output_path_blocks, ak.Array(output_blocks))
+        _logger.info('Written block info to %s' % output_path_blocks, color='bold')
     except Exception as e:
         _logger.error('Error when writing output ROOT file: \n' + str(e))
 
