@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 from functools import partial
 import torch.nn.functional as F
+from torch.xpu import device
 
 from weaver.utils.logger import _logger
 
@@ -1074,20 +1075,23 @@ class ParticleTransformer(nn.Module):
 
             def decode(x_inp, token, blocks, norm):
                 # extract class token
+                cls_block_topks = []
                 cls_tokens = token.expand(1, x_inp.size(1), -1)  # (1, N, C)
                 for cbi in range(self.num_cls_layers):
                     if self.identical_attn_weights:
                         cls_block = blocks[0]
                     else:
                         cls_block = blocks[cbi]
-                    cls_tokens, _ = cls_block(x_inp, x_cls=cls_tokens, padding_mask=padding_mask)
+                    cls_tokens, topk_idx, _ = cls_block(x_inp, x_cls=cls_tokens, padding_mask=padding_mask)
+                    cls_block_topks.append(topk_idx)
                 x_cls = norm(cls_tokens).squeeze(0)
-                return x_cls
+                return x_cls, cls_block_topks
             
             if self.weighted_decode_every_layer:
                 x_weights = []
                 outputs = []
-            
+
+            block_topks = []
             for bi in range(num_blocks):
                 if self.identical_attn_weights:
                     block = self.blocks[0]
@@ -1099,7 +1103,7 @@ class ParticleTransformer(nn.Module):
                     if self.QK_U_alpha_mode == "static":
                         qk_u_alpha = self.qk_u_encoder_alphas[bi].unsqueeze(0)  # (1, num_heads)
                     elif self.QK_U_alpha_mode == "decode":
-                        x_QK_U_alpha = decode(x, self.QK_U_alpha_token, self.QK_U_alpha_blocks, self.QK_U_alpha_norm)
+                        x_QK_U_alpha, cls_block_topks = decode(x, self.QK_U_alpha_token, self.QK_U_alpha_blocks, self.QK_U_alpha_norm)
                         x_QK_U_alpha = self.QK_U_alpha_fc(x_QK_U_alpha)  # (B, num_heads)
                     else:
                         raise ValueError(f"Unknown {self.QK_U_alpha_mode = }")
@@ -1110,7 +1114,8 @@ class ParticleTransformer(nn.Module):
                     qk_attn_weight_logits = block(x, x_cls=None, padding_mask=None, attn_mask=None, return_qk_attn_weight_logits=True)
                     assert uu is None  # not supported here
                     pair_embeds = self.pair_embed(v, qk_attn_weight_logits, block_index=bi)
-                    x, _ = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=None, use_qk_attn_weight_logits=pair_embeds, qk_u_alpha=qk_u_alpha)
+                    x, topk_idx, _ = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=None, use_qk_attn_weight_logits=pair_embeds, qk_u_alpha=qk_u_alpha)
+                    block_topks.append(topk_idx)
                     continue
 
                 attn_mask = None
@@ -1134,7 +1139,7 @@ class ParticleTransformer(nn.Module):
                     qk_attn_weights_list.append(qk_attn_weight_logits.detach().cpu())
                 
                 if self.pemb_needs_prev_attn_w:
-                    x, attn_weights = block(
+                    x, topk_idx, attn_weights = block(
                         x, x_cls=None, padding_mask=padding_mask,
                         attn_mask=attn_mask, return_final_attn_weight=True,
                         qk_u_alpha=qk_u_alpha
@@ -1143,21 +1148,22 @@ class ParticleTransformer(nn.Module):
                         attn_weights_list.append(attn_weights.detach().cpu())
                 else:
                     if self.return_qk_final_U_attn_weights:
-                        x, attn_weights = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask, return_final_attn_weight=True, qk_u_alpha=qk_u_alpha)
+                        x, topk_idx, attn_weights = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask, return_final_attn_weight=True, qk_u_alpha=qk_u_alpha)
                         attn_weights_list.append(attn_weights.detach().cpu())
                     else:
-                        x, _ = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask, qk_u_alpha=qk_u_alpha)
+                        x, topk_idx, _ = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask, qk_u_alpha=qk_u_alpha)
                 
                 if self.weighted_decode_every_layer:
-                    x_weight = decode(x, self.weighting_token, self.weighting_blocks, self.weighting_norm)
+                    x_weight, cls_block_topks = decode(x, self.weighting_token, self.weighting_blocks, self.weighting_norm)
                     x_weight = self.weighting_fc(x_weight)  # (B, 1)
                     x_weights.append(x_weight)
                     if self.weighted_decode_mode == "ensemble":
-                        x_cls = decode(x, self.cls_token, self.cls_blocks, self.norm)
+                        x_cls, cls_block_topks = decode(x, self.cls_token, self.cls_blocks, self.norm)
                         output = self.fc(x_cls)  # (B, num_classes)
                         outputs.append(output)
                     elif self.weighted_decode_mode == "aggregate_x":
                         outputs.append(x)  # (n_particles, B, ch_size)
+                block_topks.append(topk_idx)
 
             if self.weighted_decode_every_layer:
                 x_weights = torch.cat(x_weights, dim=1)  # (B, num_blocks)
@@ -1201,13 +1207,13 @@ class ParticleTransformer(nn.Module):
                 elif self.weighted_decode_mode == "aggregate_x":
                     outputs = torch.stack(outputs)  # (num_blocks, n_particles, B, ch_size)
                     x_agg = torch.einsum('bn,npbc->pbc', x_weights, outputs)  # (n_particles, B, ch_size)
-                    x_cls = decode(x_agg, self.cls_token, self.cls_blocks, self.norm)
+                    x_cls, cls_block_topks = decode(x_agg, self.cls_token, self.cls_blocks, self.norm)
                     output = self.fc(x_cls)  # (B, num_classes)
             else:
-                x_cls = decode(x, self.cls_token, self.cls_blocks, self.norm)
+                x_cls, cls_block_topks = decode(x, self.cls_token, self.cls_blocks, self.norm)
                 # fc
                 if self.fc is None:
-                    return x_cls
+                    return x_cls, block_topks, cls_block_topks
                 output = self.fc(x_cls)
 
             if self.for_inference:
@@ -1218,7 +1224,7 @@ class ParticleTransformer(nn.Module):
                     return output, qk_attn_weights_list, attn_weights_list, attn_mask, x_weights_unnorm, x_weights, outputs
                 else:
                     return output, qk_attn_weights_list, attn_weights_list, attn_mask
-            return output
+            return output, topk_idx, cls_block_topks
 
 
 class ParticleTransformerMultipleRuns(nn.Module):
@@ -1360,12 +1366,12 @@ class ParticleTransformerWithInverter(nn.Module):
 
             # transform
             for block in self.blocks:
-                x, _ = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask)
+                x, topk_idx, _ = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask)
 
             # extract class token
             cls_tokens = self.cls_token.expand(1, x.size(1), -1)  # (1, N, C)
             for block in self.cls_blocks:
-                cls_tokens = block(x, x_cls=cls_tokens, padding_mask=padding_mask)
+                cls_tokens, topk_idx, _ = block(x, x_cls=cls_tokens, padding_mask=padding_mask)
 
             x_cls = self.norm(cls_tokens).squeeze(0)
 
@@ -1378,7 +1384,7 @@ class ParticleTransformerWithInverter(nn.Module):
             # extract class token for inverter
             cls_inverter_tokens = self.cls_inverter_token.expand(1, x.size(1), -1)  # (1, N, C)
             for block in self.cls_inverter_blocks:
-                cls_inverter_tokens = block(x, x_cls=cls_inverter_tokens, padding_mask=padding_mask)
+                cls_inverter_tokens, topk_idx, _ = block(x, x_cls=cls_inverter_tokens, padding_mask=padding_mask)
 
             x_inverter_cls = self.norm(cls_inverter_tokens).squeeze(0)
 

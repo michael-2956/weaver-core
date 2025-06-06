@@ -281,7 +281,7 @@ class AlteredBlock(nn.Module):
             m=2,
             top_k=2,
             seq_aux=True,
-            device_count=1
+            device_count=1,
         ):
         super().__init__()
 
@@ -393,9 +393,9 @@ class AlteredBlock(nn.Module):
         # ============ MOE Section ============
         if self.use_moe:
             # logger.info(f'MoE ffn started')
-            x = self.ffn(x)
+            x, topk_idx = self.ffn(x)
         else:
-            x = self.ffn(x)
+            x, topk_idx = self.ffn(x), None
         # ============ MOE Section ============
         
         x = self.dropout(x)
@@ -405,7 +405,7 @@ class AlteredBlock(nn.Module):
         # ============ FFN Section ============
 
         if return_final_attn_weight:
-            return x, attn_weight
+            return x, topk_idx, attn_weight
         else:
-            return x, None
+            return x, topk_idx, None
 

@@ -664,7 +664,7 @@ def iotest(args, data_loader):
             _logger.error('Error when writing output parquet file: \n' + str(e))
 
 
-def save_root(args, output_path, data_config, scores, labels, observers):
+def save_root(args, output_path, data_config, scores, labels, observers, block_topks, cls_block_topks):
     """
     Saves as .root
     :param data_config:
@@ -676,6 +676,10 @@ def save_root(args, output_path, data_config, scores, labels, observers):
     import awkward as ak
     from weaver.utils.data.fileio import _write_root
     output = {}
+    for i, block_topk in enumerate(block_topks):
+        output['block_' + str(i) + '_topk'] = block_topk
+    for i, cls_block_topk in enumerate(cls_block_topks):
+        output['cls_block_' + str(i) + '_topk'] = cls_block_topk
     if data_config.label_type == 'simple':
         for idx, label_name in enumerate(data_config.label_value):
             output[label_name] = (labels[data_config.label_names[0]] == idx)
@@ -928,7 +932,7 @@ def _main(args):
                 from weaver.utils.nn.tools import evaluate_onnx
                 test_metric, scores, labels, observers = evaluate_onnx(args.model_prefix, test_loader)
             else:
-                test_metric, scores, labels, observers = evaluate(
+                test_metric, scores, labels, observers, block_topks, cls_block_topks = evaluate(
                     model, test_loader, dev, epoch=None, for_training=False, tb_helper=tb)
             _logger.info('Test metric %.5f' % test_metric, color='bold')
             del test_loader
@@ -947,7 +951,7 @@ def _main(args):
                     base, ext = os.path.splitext(predict_output)
                     output_path = base + '_' + name + ext
                 if output_path.endswith('.root'):
-                    save_root(args, output_path, data_config, scores, labels, observers)
+                    save_root(args, output_path, data_config, scores, labels, observers, block_topks, cls_block_topks)
                 else:
                     save_parquet(args, output_path, scores, labels, observers)
 

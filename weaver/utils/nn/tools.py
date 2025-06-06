@@ -78,7 +78,6 @@ def train_classification(
 
     with tqdm.tqdm(train_loader, mininterval=1) as tq:
         for X, y, _ in tq:
-          break
           with (torch_xla.step() if dev == 'xla' else contextlib.nullcontext()):
             inputs = [X[k].to(dev) for k in data_config.input_names]
             label = y[data_config.label_names[0]].long().to(dev)
@@ -89,7 +88,7 @@ def train_classification(
                 mask = None
             opt.zero_grad(set_to_none=False)
             with torch.autocast('xla' if dev == 'xla' else 'cuda', enabled=grad_scaler is not None):
-                model_output = model(*inputs)
+                model_output, _, _ = model(*inputs)
                 logits, label, _ = _flatten_preds(model_output, label=label, mask=mask)
                 loss = loss_func(logits, label)
                 i += 1
@@ -182,6 +181,8 @@ def evaluate_classification(model, test_loader, dev, epoch, for_training=True, l
     labels_counts = []
     observers = defaultdict(list)
     start_time = time.time()
+    block_outputs = [[] for _ in model.num_layers]
+    cls_block_outputs = [[] for _ in model.num_cls_layers]
     if dev == 'xla':
         import torch_xla
     with torch.no_grad():
@@ -196,7 +197,12 @@ def evaluate_classification(model, test_loader, dev, epoch, for_training=True, l
                     mask = y[data_config.label_names[0] + '_mask'].bool().to(dev)
                 except KeyError:
                     mask = None
-                model_output = model(*inputs)
+                model_output, block_topks, cls_block_topks = model(*inputs)
+                if not for_training:
+                    for i, topk_tensor in enumerate(block_topks):
+                        block_outputs[i].extend(topk_tensor.tolist())
+                    for i, topk_tensor in enumerate(cls_block_topks):
+                        cls_block_outputs[i].extend(topk_tensor.tolist())
                 logits, label, mask = _flatten_preds(model_output, label=label, mask=mask)
                 scores.append(torch.softmax(logits.float(), dim=1).numpy(force=True))
 
@@ -275,7 +281,7 @@ def evaluate_classification(model, test_loader, dev, epoch, for_training=True, l
                 for k, v in labels.items():
                     labels[k] = v.reshape((entry_count, -1))
         observers = {k: _concat(v) for k, v in observers.items()}
-        return total_correct / count, scores, labels, observers
+        return total_correct / count, scores, labels, observers, block_topks, cls_block_topks
 
 
 def evaluate_onnx(model_path, test_loader, eval_metrics=['roc_auc_score', 'roc_auc_score_matrix', 'confusion_matrix']):

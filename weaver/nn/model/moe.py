@@ -297,7 +297,7 @@ class MoE(Module):
                  m=2,
                  expert_scale_fc=False,
                  expert_activation_dropout=0.1,
-                 seq_aux=True,
+                 seq_aux=True
                  ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -331,8 +331,6 @@ class MoE(Module):
         identity = x
         orig_shape = x.shape
         topk_idx, topk_weight, aux_loss = self.gate(x)
-        print(topk_idx.size())
-        print(topk_idx)
         x = x.view(-1, x.shape[-1])
         flat_topk_idx = topk_idx.view(-1)
         if self.training:
@@ -347,7 +345,7 @@ class MoE(Module):
             y = self.moe_infer(x, flat_topk_idx, topk_weight.view(-1, 1)).view(*orig_shape)
         if self.n_shared_experts is not None:
             y = y + self.shared_experts(identity)
-        return y
+        return y, flat_topk_idx
 
     @torch.no_grad()
     def moe_infer(self, x, flat_expert_indices, flat_expert_weights):
@@ -400,11 +398,11 @@ class SparseMoEBlock(Module):
 
         # mixture of experts layer
         residual = x
-        moe_out = self.moe(self.moe_prenorm(x))
+        moe_out, topk_idx_flat = self.moe(self.moe_prenorm(x))
         x = moe_out + residual
 
         # feedforward after
         if exists(self.ff_after):
             x = self.ff_after(x) + x
 
-        return x
+        return x, topk_idx_flat
