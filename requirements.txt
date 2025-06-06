@@ -20,4 +20,3 @@ beartype
 einx
 einops
 colt5_attention
-cupy
