@@ -840,6 +840,7 @@ class ParticleTransformer(nn.Module):
                  m=2,
                  top_k=2,
                  device_count=1,
+                 moe_alpha=0.001,
                  # misc
                  trim=True,
                  trim_mode="random_cutoff_in_train",
@@ -914,6 +915,7 @@ class ParticleTransformer(nn.Module):
                            scale_heads=True,
                            scale_resids=True,
                            use_moe=use_moe,
+                           moe_alpha=moe_alpha,
                            N=N_experts,
                            k_shared=k_shared,
                            m=m,

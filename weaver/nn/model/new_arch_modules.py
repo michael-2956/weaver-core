@@ -281,6 +281,7 @@ class AlteredBlock(nn.Module):
             m=2,
             top_k=2,
             seq_aux=True,
+            moe_alpha=0.001,
             device_count=1,
         ):
         super().__init__()
@@ -309,7 +310,8 @@ class AlteredBlock(nn.Module):
                       m=m,
                       expert_scale_fc=scale_fc,
                       expert_activation_dropout=activation_dropout,
-                      seq_aux=seq_aux)
+                      seq_aux=seq_aux,
+                      loss_alpha=moe_alpha)
             self.ffn = SparseMoEBlock(moe=moe)
         else:
             self.ffn = Expert(self.embed_dim, self.ffn_dim, activation, activation_dropout, scale_fc)

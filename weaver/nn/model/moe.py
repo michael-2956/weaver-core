@@ -297,7 +297,8 @@ class MoE(Module):
                  m=2,
                  expert_scale_fc=False,
                  expert_activation_dropout=0.1,
-                 seq_aux=True
+                 seq_aux=True,
+                 loss_alpha=0.001
                  ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -310,7 +311,7 @@ class MoE(Module):
                             num_experts_per_tok=self.top_n,
                             n_routed_experts=self.num_experts,
                             scoring_func='softmax',
-                            aux_loss_alpha=0.001,
+                            aux_loss_alpha=loss_alpha,
                             seq_aux=seq_aux,
                             norm_topk_prob=True)
 
