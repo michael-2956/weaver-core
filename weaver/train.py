@@ -160,6 +160,9 @@ def to_filelist(args, mode='train'):
     else:
         raise NotImplementedError('Invalid mode %s' % mode)
 
+    print(f"{mode = }")
+    print(f"{flist = }")
+
     # keyword-based: 'a:/path/to/a b:/path/to/b'
     file_dict = {}
     for f in flist:
@@ -173,9 +176,13 @@ def to_filelist(args, mode='train'):
         else:
             file_dict[name] = files
 
+    print(f"1 {file_dict = }")
+
     # sort files
     for name, files in file_dict.items():
         file_dict[name] = sorted(files)
+    
+    print(f"2 {file_dict = }")
 
     if args.local_rank is not None:
         if mode == 'train':
@@ -206,9 +213,14 @@ def to_filelist(args, mode='train'):
                 _logger.error('Only %d/%d files copied for %s file group %s',
                               len(new_file_dict[name]), len(files), mode, name)
         file_dict = new_file_dict
+    
+    print(f"3 {file_dict = }")
 
     filelist = sum(file_dict.values(), [])
     assert(len(filelist) == len(set(filelist)))
+
+    print(f"{filelist = }")
+
     return file_dict, filelist
 
 
@@ -262,19 +274,9 @@ def train_load(args):
                                  infinity_mode=args.steps_per_epoch_val is not None,
                                  in_memory=args.in_memory,
                                  name='val' + ('' if args.local_rank is None else '_rank%d' % args.local_rank))
-    print(f"{args.num_workers = }")
-    print(f"{len(train_files) = }")
-    print(f"{args.file_fraction = }")
-    print(f"{int(len(train_files) * args.file_fraction) = }")
-    print(f"{min(args.num_workers, int(len(train_files) * args.file_fraction)) = }")
     train_loader = DataLoader(train_data, batch_size=args.batch_size, drop_last=True, pin_memory=not args.use_xla,
                               num_workers=min(args.num_workers, int(len(train_files) * args.file_fraction)),
                               persistent_workers=args.num_workers > 0 and args.steps_per_epoch is not None)
-    print(f"{args.num_workers = }")
-    print(f"{len(val_files) = }")
-    print(f"{args.file_fraction = }")
-    print(f"{int(len(val_files) * args.file_fraction) = }")
-    print(f"{min(args.num_workers, int(len(val_files) * args.file_fraction)) = }")
     val_loader = DataLoader(val_data, batch_size=args.batch_size, drop_last=True, pin_memory=not args.use_xla,
                             num_workers=min(args.num_workers, int(len(val_files) * args.file_fraction)),
                             persistent_workers=args.num_workers > 0 and args.steps_per_epoch_val is not None)
