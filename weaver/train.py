@@ -171,6 +171,8 @@ def to_filelist(args, mode='train'):
         else:
             name, fp = '_', f
         files = glob.glob(fp)
+        print(f"{name, fp = }")
+        print(f"{files = }")
         if name in file_dict:
             file_dict[name] += files
         else:
