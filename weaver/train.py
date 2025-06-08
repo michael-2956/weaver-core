@@ -160,9 +160,6 @@ def to_filelist(args, mode='train'):
     else:
         raise NotImplementedError('Invalid mode %s' % mode)
 
-    print(f"{mode = }")
-    print(f"{flist = }")
-
     # keyword-based: 'a:/path/to/a b:/path/to/b'
     file_dict = {}
     for f in flist:
@@ -171,20 +168,14 @@ def to_filelist(args, mode='train'):
         else:
             name, fp = '_', f
         files = glob.glob(fp)
-        print(f"{name, fp = }")
-        print(f"{files = }")
         if name in file_dict:
             file_dict[name] += files
         else:
             file_dict[name] = files
 
-    print(f"1 {file_dict = }")
-
     # sort files
     for name, files in file_dict.items():
         file_dict[name] = sorted(files)
-    
-    print(f"2 {file_dict = }")
 
     if args.local_rank is not None:
         if mode == 'train':
@@ -215,14 +206,9 @@ def to_filelist(args, mode='train'):
                 _logger.error('Only %d/%d files copied for %s file group %s',
                               len(new_file_dict[name]), len(files), mode, name)
         file_dict = new_file_dict
-    
-    print(f"3 {file_dict = }")
 
     filelist = sum(file_dict.values(), [])
     assert(len(filelist) == len(set(filelist)))
-
-    print(f"{filelist = }")
-
     return file_dict, filelist
 
 
